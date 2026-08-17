@@ -321,6 +321,8 @@ struct ContentView: View {
             } else {
                 List(filteredApps) { app in
                     AppRow(app: app,
+                           isNew: manager.recentlyAddedApps.contains(app.packageName),
+                           isRemoving: manager.removingApps.contains(app.packageName),
                            download: { chooseDownloadFolder(for: app) },
                            launch: { Task { await manager.launch(app) } },
                            remove: { appToRemove = app })
@@ -585,6 +587,8 @@ private struct DeviceHeader: View {
 
 private struct AppRow: View {
     let app: DeviceApp
+    let isNew: Bool
+    let isRemoving: Bool
     let download: () -> Void
     let launch: () -> Void
     let remove: () -> Void
@@ -601,6 +605,18 @@ private struct AppRow: View {
                 Text(app.packageName).font(.caption.monospaced()).foregroundStyle(.secondary)
             }
             Spacer()
+            if isNew {
+                Label("New", systemImage: "sparkles")
+                    .font(.caption.bold())
+                    .foregroundStyle(.green)
+                    .transition(.scale.combined(with: .opacity))
+            }
+            if isRemoving {
+                Label("Removing", systemImage: "minus.circle.fill")
+                    .font(.caption.bold())
+                    .foregroundStyle(.red)
+                    .transition(.scale.combined(with: .opacity))
+            }
             if app.isSystem { Text("System").font(.caption).foregroundStyle(.secondary) }
             if let storage = app.storage {
                 Text(ByteCountFormatter.string(fromByteCount: storage.total, countStyle: .file))
@@ -622,6 +638,12 @@ private struct AppRow: View {
                 .help("Remove app")
         }
         .padding(.vertical, 5)
+        .padding(.horizontal, 8)
+        .background((isRemoving ? Color.red : isNew ? Color.green : Color.clear).opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+        .animation(.smooth, value: isNew)
+        .animation(.smooth, value: isRemoving)
+        .transition(.asymmetric(insertion: .move(edge: .top).combined(with: .opacity), removal: .scale(scale: 0.98).combined(with: .opacity)))
+        .accessibilityHint(isNew ? "Newly installed" : isRemoving ? "Being removed" : "")
         .contextMenu {
             Button("Download APK", action: download)
             Button("Open", action: launch)

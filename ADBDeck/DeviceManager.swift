@@ -700,10 +700,14 @@ final class DeviceManager {
     var performance: DevicePerformance?
     var performanceError: String?
     var isLoadingFolderSizes = false
+    var recentlyAddedApps: Set<String> = []
+    var removingApps: Set<String> = []
 
     private let adb = ADBClient()
     private var previousCPU: [String: CPUTicks] = [:]
     private var folderSizeRequestID = UUID()
+    private var loadedAppsDeviceID: String?
+    private var loadedSystemAppsSetting = false
 
     var selectedDevice: AndroidDevice? { devices.first { $0.id == selection } }
 
@@ -767,9 +771,19 @@ final class DeviceManager {
     }
 
     func loadApps() async {
-        apps = []
         storage = nil
-        guard let device = selectedDevice, device.adbState.isUsable else { return }
+        guard let device = selectedDevice, device.adbState.isUsable else {
+            apps = []
+            loadedAppsDeviceID = nil
+            return
+        }
+        let isSameList = loadedAppsDeviceID == device.id && loadedSystemAppsSetting == showSystemApps
+        let previousPackages = isSameList ? Set(apps.map(\.packageName)) : []
+        if !isSameList {
+            apps = []
+            recentlyAddedApps = []
+            removingApps = []
+        }
         isWorking = true
         defer { isWorking = false }
         do {
@@ -777,10 +791,23 @@ final class DeviceManager {
             let system = showSystemApps ? try await packages(on: device, system: true) : []
             let user = try await userTask
             guard selectedDevice?.id == device.id else { return }
+            let loaded = (user + system).sorted { $0.packageName.localizedCaseInsensitiveCompare($1.packageName) == .orderedAscending }
+            let added = previousPackages.isEmpty ? [] : Set(loaded.map(\.packageName)).subtracting(previousPackages)
             withAnimation(.smooth) {
-                apps = (user + system).sorted { $0.packageName.localizedCaseInsensitiveCompare($1.packageName) == .orderedAscending }
+                apps = loaded
+                recentlyAddedApps.formUnion(added)
             }
+            loadedAppsDeviceID = device.id
+            loadedSystemAppsSetting = showSystemApps
             statusMessage = "Loaded \(apps.count) app\(apps.count == 1 ? "" : "s")"
+            if !added.isEmpty {
+                statusMessage = "Added \(added.count) app\(added.count == 1 ? "" : "s")"
+                Task {
+                    try? await Task.sleep(for: .seconds(3))
+                    guard selectedDevice?.id == device.id else { return }
+                    withAnimation(.smooth) { recentlyAddedApps.subtract(added) }
+                }
+            }
             await loadStorage()
         } catch { report(error, operation: "Load apps") }
     }
@@ -898,10 +925,16 @@ final class DeviceManager {
     func uninstall(_ app: DeviceApp) async {
         guard let device = selectedDevice else { return }
         isWorking = true
-        defer { isWorking = false }
+        withAnimation(.smooth) { removingApps.insert(app.packageName) }
+        defer {
+            isWorking = false
+            withAnimation(.smooth) { removingApps.remove(app.packageName) }
+        }
         do {
             _ = try await adb.run(["-s", device.serial, "uninstall", app.packageName])
-            statusMessage = "Removed \(app.packageName)"
+            try? await Task.sleep(for: .milliseconds(450))
+            withAnimation(.smooth) { apps.removeAll { $0.packageName == app.packageName } }
+            statusMessage = "Removed \(app.displayName)"
             await loadApps()
         } catch { report(error, operation: "Remove \(app.displayName)") }
     }

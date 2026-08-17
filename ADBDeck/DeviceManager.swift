@@ -384,7 +384,7 @@ struct RemoteClipboard: Equatable, Sendable {
 struct TransferStatus: Equatable {
     var title: String
     var detail: String
-    var fraction: Double
+    var fraction: Double?
 }
 
 struct OperationFailure: Identifiable, Equatable {
@@ -749,6 +749,8 @@ final class DeviceManager {
     func refresh() async {
         guard !isRefreshing else { return }
         isRefreshing = true
+        let ownsActivity = beginActivity("Locating devices", detail: "Scanning the local network")
+        defer { endActivity(ownsActivity) }
         statusMessage = "Scanning the local network…"
         let hosts = await NetworkDiscovery.discover()
         var results: [AndroidDevice] = []
@@ -787,8 +789,8 @@ final class DeviceManager {
             statusMessage = "Enter a valid IPv4 address"
             return
         }
-        isWorking = true
-        defer { isWorking = false }
+        let ownsActivity = beginActivity("Connecting to \(ip)", detail: "Checking ADB availability")
+        defer { endActivity(ownsActivity) }
         var device = AndroidDevice(id: ip, name: "Android device", manufacturer: "Unknown", model: "Unknown", adbState: .available, isAndroidLikely: true, hasCast: false)
         await enrichWithADB(&device)
         if let index = devices.firstIndex(where: { $0.id == ip }) { devices[index] = device } else { devices.append(device) }
@@ -798,8 +800,8 @@ final class DeviceManager {
 
     func connectSelected() async {
         guard var device = selectedDevice else { return }
-        isWorking = true
-        defer { isWorking = false }
+        let ownsActivity = beginActivity("Connecting to \(device.name)", detail: device.serial)
+        defer { endActivity(ownsActivity) }
         await enrichWithADB(&device)
         if let index = devices.firstIndex(where: { $0.id == device.id }) { devices[index] = device }
         await loadApps()
@@ -819,8 +821,8 @@ final class DeviceManager {
             recentlyAddedApps = []
             removingApps = []
         }
-        isWorking = true
-        defer { isWorking = false }
+        let ownsActivity = beginActivity("Loading apps", detail: "Reading packages from \(device.name)")
+        defer { endActivity(ownsActivity) }
         do {
             async let userTask = packages(on: device, system: false)
             let system = showSystemApps ? try await packages(on: device, system: true) : []
@@ -850,6 +852,8 @@ final class DeviceManager {
     @discardableResult
     func loadStorage() async -> Bool {
         guard let device = selectedDevice, device.adbState.isUsable else { storage = nil; return false }
+        let ownsActivity = beginActivity("Reading storage", detail: device.name)
+        defer { endActivity(ownsActivity) }
         do {
             let snapshot = try await storageSnapshot(on: device)
             guard selectedDevice?.id == device.id else { return false }
@@ -904,7 +908,7 @@ final class DeviceManager {
         isWorking = true
         let serial = device.serial
         let remote = "/data/local/tmp/adbdeck-\(UUID().uuidString).apk"
-        transfer = TransferStatus(title: "Installing \(url.lastPathComponent)", detail: "Uploading to \(device.name)", fraction: 0)
+        transfer = TransferStatus(title: "Installing \(url.lastPathComponent)", detail: "Uploading to \(device.name)", fraction: nil)
         statusMessage = "Installing \(url.lastPathComponent)…"
         do {
             _ = try await adb.runStreaming(["-s", serial, "push", url.path, remote], progress: progressHandler(from: 0, to: 0.88))
@@ -928,7 +932,7 @@ final class DeviceManager {
         guard let device = selectedDevice, device.adbState.isUsable else { return nil }
         isWorking = true
         let serial = device.serial
-        transfer = TransferStatus(title: "Downloading \(app.displayName)", detail: "Reading package paths", fraction: 0)
+        transfer = TransferStatus(title: "Downloading \(app.displayName)", detail: "Reading package paths", fraction: nil)
         statusMessage = "Downloading \(app.packageName)…"
         do {
             let output = try await adb.run(["-s", serial, "shell", "pm", "path", app.packageName])
@@ -981,6 +985,7 @@ final class DeviceManager {
         isWorking = true
         let workspace = FileManager.default.temporaryDirectory.appendingPathComponent("ADBDeck-\(UUID().uuidString)", isDirectory: true)
         transfer = TransferStatus(title: "Installing \(archive.deletingPathExtension().lastPathComponent)", detail: "Opening app package", fraction: 0.05)
+        statusMessage = "Installing \(archive.lastPathComponent)…"
         do {
             try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: workspace) }
@@ -1032,10 +1037,10 @@ final class DeviceManager {
 
     func uninstall(_ app: DeviceApp) async {
         guard let device = selectedDevice else { return }
-        isWorking = true
+        let ownsActivity = beginActivity("Removing \(app.displayName)", detail: "From \(device.name)")
         withAnimation(.smooth) { removingApps.insert(app.packageName) }
         defer {
-            isWorking = false
+            endActivity(ownsActivity)
             withAnimation(.smooth) { removingApps.remove(app.packageName) }
         }
         do {
@@ -1049,6 +1054,8 @@ final class DeviceManager {
 
     func launch(_ app: DeviceApp) async {
         guard let device = selectedDevice else { return }
+        let ownsActivity = beginActivity("Opening \(app.displayName)", detail: "On \(device.name)")
+        defer { endActivity(ownsActivity) }
         do {
             _ = try await adb.run(["-s", device.serial, "shell", "monkey -p \(app.packageName) -c android.intent.category.LAUNCHER 1"])
             statusMessage = "Opened \(app.displayName)"
@@ -1063,8 +1070,8 @@ final class DeviceManager {
         files = []
         folderSizeRequestID = UUID()
         isLoadingFolderSizes = false
-        isWorking = true
-        defer { isWorking = false }
+        let ownsActivity = beginActivity("Opening folder", detail: target)
+        defer { endActivity(ownsActivity) }
         do {
             let output = try await adb.run(["-s", device.serial, "shell", "ls -la \(RemoteFiles.shellQuote(target))"])
             guard selectedDevice?.id == device.id, currentPath == target else { return }
@@ -1133,13 +1140,16 @@ final class DeviceManager {
         guard let device = selectedDevice, device.adbState.isUsable else { return }
         let destination = RemoteFiles.joined(currentPath, url.lastPathComponent)
         isWorking = true
-        transfer = TransferStatus(title: "Uploading \(url.lastPathComponent)", detail: currentPath, fraction: 0)
+        transfer = TransferStatus(title: "Uploading \(url.lastPathComponent)", detail: "To \(currentPath)", fraction: nil)
+        statusMessage = "Uploading \(url.lastPathComponent)…"
         do {
             _ = try await adb.runStreaming(["-s", device.serial, "push", url.path, destination], progress: progressHandler(from: 0, to: 1))
             transfer?.fraction = 1
+            transfer?.detail = "Refreshing files and storage"
             statusMessage = "Uploaded \(url.lastPathComponent)"
             await loadFiles()
             await loadStorage()
+            try? await Task.sleep(for: .milliseconds(350))
         } catch { report(error, operation: "Upload \(url.lastPathComponent)") }
         transfer = nil
         isWorking = false
@@ -1149,11 +1159,13 @@ final class DeviceManager {
         guard let device = selectedDevice, device.adbState.isUsable else { return nil }
         let destination = directory.appendingPathComponent(file.name)
         isWorking = true
-        transfer = TransferStatus(title: "Downloading \(file.name)", detail: directory.path, fraction: 0)
+        transfer = TransferStatus(title: "Downloading \(file.name)", detail: "To \(directory.path)", fraction: nil)
+        statusMessage = "Downloading \(file.name)…"
         do {
             _ = try await adb.runStreaming(["-s", device.serial, "pull", file.path, destination.path], progress: progressHandler(from: 0, to: 1))
             transfer?.fraction = 1
             statusMessage = "Saved \(file.name)"
+            try? await Task.sleep(for: .milliseconds(350))
             transfer = nil
             isWorking = false
             return destination
@@ -1177,7 +1189,8 @@ final class DeviceManager {
     @discardableResult
     private func mutateFiles(_ command: String, success: String) async -> Bool {
         guard let device = selectedDevice, device.adbState.isUsable else { return false }
-        isWorking = true
+        let ownsActivity = beginActivity(success, detail: "On \(device.name)")
+        defer { endActivity(ownsActivity) }
         do {
             _ = try await adb.run(["-s", device.serial, "shell", command])
             statusMessage = success
@@ -1185,10 +1198,8 @@ final class DeviceManager {
             await loadStorage()
         } catch {
             report(error, operation: success)
-            isWorking = false
             return false
         }
-        isWorking = false
         return true
     }
 
@@ -1252,9 +1263,26 @@ final class DeviceManager {
     private func progressHandler(from start: Double, to end: Double) -> @Sendable (Double) -> Void {
         { [weak self] value in
             Task { @MainActor [weak self] in
-                self?.transfer?.fraction = start + min(max(value, 0), 1) * (end - start)
+                let next = start + min(max(value, 0), 1) * (end - start)
+                if let current = self?.transfer?.fraction, current > next { return }
+                self?.transfer?.fraction = next
             }
         }
+    }
+
+    @discardableResult
+    private func beginActivity(_ title: String, detail: String, fraction: Double? = nil) -> Bool {
+        isWorking = true
+        statusMessage = "\(title)…"
+        guard transfer == nil else { return false }
+        withAnimation(.smooth) { transfer = TransferStatus(title: title, detail: detail, fraction: fraction) }
+        return true
+    }
+
+    private func endActivity(_ owned: Bool) {
+        guard owned else { return }
+        withAnimation(.smooth) { transfer = nil }
+        isWorking = false
     }
 
     private func estimateBrand(from name: String?, macAddress: String? = nil) -> String {

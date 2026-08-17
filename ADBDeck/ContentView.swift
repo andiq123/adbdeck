@@ -191,7 +191,7 @@ struct ContentView: View {
         .listStyle(.sidebar)
         .safeAreaInset(edge: .bottom) {
             HStack(spacing: 10) {
-                if manager.isRefreshing {
+                if manager.isRefreshing || manager.isWorking {
                     ProgressView().controlSize(.small).frame(width: 10, height: 10)
                 } else {
                     Circle().fill(.green).frame(width: 7, height: 7).frame(width: 10)
@@ -267,16 +267,20 @@ struct ContentView: View {
             if let transfer = manager.transfer {
                 TransferBanner(transfer: transfer)
                     .frame(maxWidth: 620)
-                    .padding(16)
-                    .shadow(color: .black.opacity(0.18), radius: 18, y: 8)
+                    .padding(20)
             }
         }
+        .animation(.smooth(duration: 0.25), value: manager.transfer)
         .toolbar {
             ToolbarItemGroup {
-                Menu {
-                    if detailMode == .apps {
-                        Button { isImporting = true } label: { Label("Install app package", systemImage: "square.and.arrow.down") }
-                    } else {
+                if detailMode == .apps {
+                    Button { isImporting = true } label: {
+                        Label("Install", systemImage: "square.and.arrow.down")
+                    }
+                    .help("Install an APK or ADB Deck app package")
+                    .disabled(!device.adbState.isUsable || manager.isWorking)
+                } else {
+                    Menu {
                         Button(action: chooseUpload) { Label("Upload", systemImage: "square.and.arrow.up") }
                         Button {
                             newFolderName = ""
@@ -284,11 +288,11 @@ struct ContentView: View {
                         } label: { Label("New folder", systemImage: "folder.badge.plus") }
                         Button { Task { await manager.pasteFiles() } } label: { Label("Paste", systemImage: "doc.on.clipboard") }
                             .disabled(manager.fileClipboard == nil)
+                    } label: {
+                        Label("File actions", systemImage: "ellipsis.circle")
                     }
-                } label: {
-                    Label("Actions", systemImage: "ellipsis.circle")
+                    .disabled(!device.adbState.isUsable || manager.isWorking)
                 }
-                .disabled(!device.adbState.isUsable || manager.isWorking)
                 Button { Task { await reloadDetail() } } label: { Label("Reload", systemImage: "arrow.clockwise") }
                     .disabled(!device.adbState.isUsable || manager.isWorking)
             }
@@ -835,12 +839,22 @@ private struct TransferBanner: View {
                 HStack {
                     Text(transfer.title).fontWeight(.semibold).lineLimit(1)
                     Spacer()
-                    Text(transfer.fraction, format: .percent.precision(.fractionLength(0)))
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                    if let fraction = transfer.fraction {
+                        Text(fraction, format: .percent.precision(.fractionLength(0)))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .contentTransition(.numericText())
+                    } else {
+                        ProgressView().controlSize(.small)
+                    }
                 }
-                ProgressView(value: transfer.fraction)
-                    .progressViewStyle(.linear)
+                if let fraction = transfer.fraction {
+                    ProgressView(value: fraction)
+                        .progressViewStyle(.linear)
+                } else {
+                    ProgressView()
+                        .progressViewStyle(.linear)
+                }
                 Text(transfer.detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -848,11 +862,16 @@ private struct TransferBanner: View {
             }
         }
         .padding(.horizontal, 20)
-        .padding(.vertical, 13)
-        .background(Color.accentColor.opacity(0.06))
-        .transition(.move(edge: .top).combined(with: .opacity))
+        .padding(.vertical, 15)
+        .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(.separator, lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.22), radius: 20, y: 8)
+        .transition(.move(edge: .bottom).combined(with: .opacity))
         .animation(.smooth, value: transfer.fraction)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(transfer.title), \(Int(transfer.fraction * 100)) percent")
+        .accessibilityLabel(transfer.fraction.map { "\(transfer.title), \(Int($0 * 100)) percent" } ?? "\(transfer.title), in progress")
     }
 }

@@ -4,6 +4,7 @@
 DerivedData/
 build/
 build-release/
+build-test/
 xcuserdata/
 *.xcuserstate
 

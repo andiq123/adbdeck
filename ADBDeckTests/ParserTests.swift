@@ -21,6 +21,7 @@ final class ParserTests: XCTestCase {
 
     func testADBProgressAndIconEstimation() {
         XCTAssertEqual(ADBProgress.fraction(in: "[ 42%] pushing base.apk"), 0.42)
+        XCTAssertEqual(ADBProgress.fraction(in: "[ 12%] pushing base.apk\r[ 87%] pushing base.apk"), 0.87)
         XCTAssertEqual(DeviceApp(packageName: "com.netflix.ninja", isSystem: false).symbol, "play.rectangle.fill")
         XCTAssertTrue(ADBClient.needsServerRestart("failed to connect: No route to host"))
         XCTAssertFalse(ADBClient.needsServerRestart("authentication rejected"))

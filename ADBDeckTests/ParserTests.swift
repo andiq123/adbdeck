@@ -138,4 +138,23 @@ final class ParserTests: XCTestCase {
         XCTAssertThrowsError(try InstallOutput.requireSuccess("Not successful"))
     }
 
+    func testPackageInstallAndUpdateDates() {
+        let dates = PackageMetadataParser.dates("""
+          Package [com.example.old] (abc):
+            firstInstallTime=2025-01-02 03:04:05
+            lastUpdateTime=2025-02-03 04:05:06
+          Package [com.example.new] (def):
+            firstInstallTime=2026-08-17 19:30:00
+            lastUpdateTime=2026-08-17 19:31:00
+              firstInstallTime=1970-01-01 00:00:00
+          Package [com.example.unknown] (ghi):
+            firstInstallTime=not-a-date
+        """)
+        XCTAssertEqual(dates.count, 3)
+        XCTAssertNotNil(dates["com.example.old"]?.installed)
+        XCTAssertGreaterThan(dates["com.example.new"]!.installed!, dates["com.example.old"]!.installed!)
+        XCTAssertGreaterThan(dates["com.example.new"]!.updated!, dates["com.example.new"]!.installed!)
+        XCTAssertNil(dates["com.example.unknown"]?.installed)
+    }
+
 }

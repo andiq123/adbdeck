@@ -189,6 +189,8 @@ struct DeviceApp: Identifiable, Hashable, Sendable {
     let packageName: String
     let isSystem: Bool
     var storage: AppStorage? = nil
+    var installedAt: Date? = nil
+    var updatedAt: Date? = nil
     var id: String { packageName }
 
     private static let knownNames = [
@@ -219,6 +221,38 @@ struct DeviceApp: Identifiable, Hashable, Sendable {
         if ["game", "geforce"].contains(where: value.contains) { return "gamecontroller.fill" }
         if ["settings", "tools", "adb"].contains(where: value.contains) { return "wrench.and.screwdriver.fill" }
         return isSystem ? "gearshape.2.fill" : "app.fill"
+    }
+}
+
+struct AppDates: Equatable, Sendable {
+    var installed: Date?
+    var updated: Date?
+}
+
+enum PackageMetadataParser {
+    static func dates(_ output: String) -> [String: AppDates] {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        var result: [String: AppDates] = [:]
+        var package: String?
+        for rawLine in output.split(separator: "\n") {
+            let line = String(rawLine)
+            if line.hasPrefix("  Package ["), let end = line.firstIndex(of: "]") {
+                package = String(line[line.index(line.startIndex, offsetBy: 11)..<end])
+                continue
+            }
+            guard let package else { continue }
+            let field = line.dropFirst(min(4, line.count))
+            if field.hasPrefix("firstInstallTime=") {
+                result[package, default: AppDates()].installed = formatter.date(from: String(field.dropFirst(17)))
+            } else if field.hasPrefix("lastUpdateTime=") {
+                result[package, default: AppDates()].updated = formatter.date(from: String(field.dropFirst(15)))
+            }
+        }
+        return result
     }
 }
 
@@ -972,10 +1006,18 @@ final class DeviceManager {
         defer { endActivity(ownsActivity) }
         do {
             async let userTask = packages(on: device, system: false)
+            async let metadataTask = try? adb.run(["-s", device.serial, "shell", "dumpsys package packages | grep -E '^  Package \\[|firstInstallTime=|lastUpdateTime='"])
             let system = showSystemApps ? try await packages(on: device, system: true) : []
             let user = try await userTask
+            let metadataOutput: String? = await metadataTask
+            let dates = PackageMetadataParser.dates(metadataOutput ?? "")
             guard selectedDevice?.id == device.id else { return }
-            let loaded = (user + system).sorted { $0.packageName.localizedCaseInsensitiveCompare($1.packageName) == .orderedAscending }
+            var loaded: [DeviceApp] = user + system
+            for index in loaded.indices {
+                loaded[index].installedAt = dates[loaded[index].packageName]?.installed
+                loaded[index].updatedAt = dates[loaded[index].packageName]?.updated
+            }
+            loaded.sort { $0.packageName.localizedCaseInsensitiveCompare($1.packageName) == .orderedAscending }
             let added = previousPackages.isEmpty ? [] : Set(loaded.map(\.packageName)).subtracting(previousPackages)
             withAnimation(.smooth) {
                 apps = loaded

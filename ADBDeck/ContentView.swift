@@ -7,7 +7,12 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     private enum DetailMode: String, CaseIterable { case apps = "Apps", files = "Files" }
-    private enum AppSort: String, CaseIterable { case name = "Name", size = "Size" }
+    private enum AppSort: String, CaseIterable {
+        case name = "Name"
+        case installed = "Recently installed"
+        case updated = "Recently updated"
+        case size = "Size"
+    }
 
     @State private var manager = DeviceManager()
     @State private var search = ""
@@ -20,7 +25,7 @@ struct ContentView: View {
     @State private var showNewFolder = false
     @State private var newFolderName = ""
     @State private var detailMode = DetailMode.apps
-    @State private var appSort = AppSort.name
+    @SwiftUI.AppStorage("appSort") private var appSort = AppSort.name
     @State private var showAddDevice = false
     @State private var manualAddress = ""
     @State private var showOtherDevices = false
@@ -34,10 +39,27 @@ struct ContentView: View {
         }
         switch appSort {
         case .name:
-            return filtered.sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
+            return filtered.sorted(by: nameOrder)
+        case .installed:
+            return filtered.sorted { recentOrder($0.installedAt, $1.installedAt, $0, $1) }
+        case .updated:
+            return filtered.sorted { recentOrder($0.updatedAt, $1.updatedAt, $0, $1) }
         case .size:
-            return filtered.sorted { ($0.storage?.total ?? -1) > ($1.storage?.total ?? -1) }
+            return filtered.sorted {
+                let lhs = $0.storage?.total ?? -1
+                let rhs = $1.storage?.total ?? -1
+                return lhs == rhs ? nameOrder($0, $1) : lhs > rhs
+            }
         }
+    }
+
+    private func nameOrder(_ lhs: DeviceApp, _ rhs: DeviceApp) -> Bool {
+        lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
+    }
+
+    private func recentOrder(_ lhs: Date?, _ rhs: Date?, _ lhsApp: DeviceApp, _ rhsApp: DeviceApp) -> Bool {
+        if lhs != rhs { return (lhs ?? .distantPast) > (rhs ?? .distantPast) }
+        return nameOrder(lhsApp, rhsApp)
     }
 
     private var filteredFiles: [RemoteFile] {
@@ -348,6 +370,8 @@ struct ContentView: View {
                     AppRow(app: app,
                            isNew: manager.recentlyAddedApps.contains(app.packageName),
                            isRemoving: manager.removingApps.contains(app.packageName),
+                           dateLabel: appSort == .installed ? "Installed" : appSort == .updated ? "Updated" : nil,
+                           date: appSort == .installed ? app.installedAt : appSort == .updated ? app.updatedAt : nil,
                            download: { chooseDownloadFolder(for: app) },
                            launch: { Task { await manager.launch(app) } },
                            remove: { appToRemove = app })
@@ -382,7 +406,7 @@ struct ContentView: View {
                     ForEach(AppSort.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.menu)
-                .frame(width: 125)
+                .frame(width: 170)
                 TextField("Search apps", text: $search)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 200)
@@ -614,6 +638,8 @@ private struct AppRow: View {
     let app: DeviceApp
     let isNew: Bool
     let isRemoving: Bool
+    let dateLabel: String?
+    let date: Date?
     let download: () -> Void
     let launch: () -> Void
     let remove: () -> Void
@@ -643,6 +669,12 @@ private struct AppRow: View {
                     .transition(.scale.combined(with: .opacity))
             }
             if app.isSystem { Text("System").font(.caption).foregroundStyle(.secondary) }
+            if let dateLabel {
+                Text(date.map { "\(dateLabel) \($0.formatted(date: .abbreviated, time: .omitted))" } ?? "Date unavailable")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 142, alignment: .trailing)
+            }
             if let storage = app.storage {
                 Text((storage.isEstimate ? "≈ " : "") + ByteCountFormatter.string(fromByteCount: storage.total, countStyle: .file))
                     .font(.caption.monospacedDigit())

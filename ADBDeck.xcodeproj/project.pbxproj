@@ -1,0 +1,423 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		5892CF00245A5013783F6AFC /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8419BF14054FB18426599454 /* ContentView.swift */; };
+		9BC8AB8D51E855AF9837CDB8 /* ADBDeckApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACCB9439F0E5D8FA414F5E46 /* ADBDeckApp.swift */; };
+		9CA168288B78D6E8431D71B6 /* DeviceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5664B293EE2271FCD8BC8DBE /* DeviceManager.swift */; };
+		C0F4734BC35A111FFA22F1B8 /* platform-tools in Resources */ = {isa = PBXBuildFile; fileRef = DE62FFBA410C26536D1B047F /* platform-tools */; };
+		D1E9A10DD0315150F9588631 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 910F1CEDE4182526BFA4DF4D /* Assets.xcassets */; };
+		F3AD823F4214624BF41BBFD7 /* ParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E7AA3ADBFA7CAA70322FA00 /* ParserTests.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		24687D420C188AE08EA0CD78 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 755B00D9E195EAD12D70EE17 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 0EF0939D2F29EE73274FC688;
+			remoteInfo = ADBDeck;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		213C0278385265A56FA5B479 /* ADBDeckTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ADBDeckTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		5444B17D3E0D9568B94A96E9 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		5664B293EE2271FCD8BC8DBE /* DeviceManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceManager.swift; sourceTree = "<group>"; };
+		6E7AA3ADBFA7CAA70322FA00 /* ParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParserTests.swift; sourceTree = "<group>"; };
+		8419BF14054FB18426599454 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		8E4A078E00973FE1C46422C0 /* ADBDeck.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ADBDeck.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		910F1CEDE4182526BFA4DF4D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		ACCB9439F0E5D8FA414F5E46 /* ADBDeckApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ADBDeckApp.swift; sourceTree = "<group>"; };
+		DE62FFBA410C26536D1B047F /* platform-tools */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "platform-tools"; path = "ADBDeck/Resources/platform-tools"; sourceTree = SOURCE_ROOT; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		1307BB2C9D09EC0862C0FEF1 = {
+			isa = PBXGroup;
+			children = (
+				DE62FFBA410C26536D1B047F /* platform-tools */,
+				20C2706B7FE23FD7416EED65 /* ADBDeck */,
+				E5653A7308F151F89B7E32D1 /* ADBDeckTests */,
+				C4DC7605B4F4CB7C085FC15D /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		20C2706B7FE23FD7416EED65 /* ADBDeck */ = {
+			isa = PBXGroup;
+			children = (
+				ACCB9439F0E5D8FA414F5E46 /* ADBDeckApp.swift */,
+				910F1CEDE4182526BFA4DF4D /* Assets.xcassets */,
+				8419BF14054FB18426599454 /* ContentView.swift */,
+				5664B293EE2271FCD8BC8DBE /* DeviceManager.swift */,
+				5444B17D3E0D9568B94A96E9 /* Info.plist */,
+			);
+			path = ADBDeck;
+			sourceTree = "<group>";
+		};
+		C4DC7605B4F4CB7C085FC15D /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				8E4A078E00973FE1C46422C0 /* ADBDeck.app */,
+				213C0278385265A56FA5B479 /* ADBDeckTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		E5653A7308F151F89B7E32D1 /* ADBDeckTests */ = {
+			isa = PBXGroup;
+			children = (
+				6E7AA3ADBFA7CAA70322FA00 /* ParserTests.swift */,
+			);
+			path = ADBDeckTests;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		0EF0939D2F29EE73274FC688 /* ADBDeck */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B1FE75AC5F5AF47972DF129B /* Build configuration list for PBXNativeTarget "ADBDeck" */;
+			buildPhases = (
+				95E84DC534DB26377D44FA2D /* Sources */,
+				F69A14F0420188AE118AE9F2 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ADBDeck;
+			packageProductDependencies = (
+			);
+			productName = ADBDeck;
+			productReference = 8E4A078E00973FE1C46422C0 /* ADBDeck.app */;
+			productType = "com.apple.product-type.application";
+		};
+		F8D81B716B5101F21CCB2805 /* ADBDeckTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B96B1F9ED1D3718AF402829C /* Build configuration list for PBXNativeTarget "ADBDeckTests" */;
+			buildPhases = (
+				D1CCEEA5C995C5876FC262C5 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A28F1E7A19A387ADED1A0703 /* PBXTargetDependency */,
+			);
+			name = ADBDeckTests;
+			packageProductDependencies = (
+			);
+			productName = ADBDeckTests;
+			productReference = 213C0278385265A56FA5B479 /* ADBDeckTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		755B00D9E195EAD12D70EE17 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					0EF0939D2F29EE73274FC688 = {
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 1CD898C41FD35FE1B79691A2 /* Build configuration list for PBXProject "ADBDeck" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 1307BB2C9D09EC0862C0FEF1;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = C4DC7605B4F4CB7C085FC15D /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				0EF0939D2F29EE73274FC688 /* ADBDeck */,
+				F8D81B716B5101F21CCB2805 /* ADBDeckTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		F69A14F0420188AE118AE9F2 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D1E9A10DD0315150F9588631 /* Assets.xcassets in Resources */,
+				C0F4734BC35A111FFA22F1B8 /* platform-tools in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		95E84DC534DB26377D44FA2D /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9BC8AB8D51E855AF9837CDB8 /* ADBDeckApp.swift in Sources */,
+				5892CF00245A5013783F6AFC /* ContentView.swift in Sources */,
+				9CA168288B78D6E8431D71B6 /* DeviceManager.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D1CCEEA5C995C5876FC262C5 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F3AD823F4214624BF41BBFD7 /* ParserTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A28F1E7A19A387ADED1A0703 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 0EF0939D2F29EE73274FC688 /* ADBDeck */;
+			targetProxy = 24687D420C188AE08EA0CD78 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		298006881086A777B70D89D4 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.andi.ADBDeckTests;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ADB Deck.app/Contents/MacOS/ADB Deck";
+			};
+			name = Release;
+		};
+		4714CAD723275CFB7A5CBAB6 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		669FF63AF7F6555773923A52 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		8E35145F4071E0955424797F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ADBDeck/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.andi.ADBDeck;
+				PRODUCT_MODULE_NAME = ADBDeck;
+				PRODUCT_NAME = "ADB Deck";
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		B75A04BFD317083D8E54136D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ADBDeck/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.andi.ADBDeck;
+				PRODUCT_MODULE_NAME = ADBDeck;
+				PRODUCT_NAME = "ADB Deck";
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		BED59E6FD5230E4C305B001D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.andi.ADBDeckTests;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ADB Deck.app/Contents/MacOS/ADB Deck";
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		1CD898C41FD35FE1B79691A2 /* Build configuration list for PBXProject "ADBDeck" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				669FF63AF7F6555773923A52 /* Debug */,
+				4714CAD723275CFB7A5CBAB6 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		B1FE75AC5F5AF47972DF129B /* Build configuration list for PBXNativeTarget "ADBDeck" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B75A04BFD317083D8E54136D /* Debug */,
+				8E35145F4071E0955424797F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		B96B1F9ED1D3718AF402829C /* Build configuration list for PBXNativeTarget "ADBDeckTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BED59E6FD5230E4C305B001D /* Debug */,
+				298006881086A777B70D89D4 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 755B00D9E195EAD12D70EE17 /* Project object */;
+}

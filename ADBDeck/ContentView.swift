@@ -46,6 +46,10 @@ struct ContentView: View {
     }
 
     var body: some View {
+        presentedContent
+    }
+
+    private var navigationContent: some View {
         NavigationSplitView {
             sidebar
                 .frame(width: 280)
@@ -83,6 +87,10 @@ struct ContentView: View {
             guard case .success(let url) = result else { return }
             Task { await manager.install(url) }
         }
+    }
+
+    private var destructiveAlertContent: some View {
+        navigationContent
         .alert("Replace installed app?", isPresented: Binding(get: { manager.pendingReplacement != nil }, set: { if !$0 { manager.pendingReplacement = nil } }), presenting: manager.pendingReplacement) { request in
             Button("Cancel", role: .cancel) { manager.pendingReplacement = nil }
             Button("Replace", role: .destructive) {
@@ -110,6 +118,10 @@ struct ContentView: View {
         } message: { file in
             Text("Permanently delete \(file.name)\(file.isDirectory ? " and everything inside it" : "") from the device? This cannot be undone.")
         }
+    }
+
+    private var presentedContent: some View {
+        destructiveAlertContent
         .alert("Rename", isPresented: Binding(get: { fileToRename != nil }, set: { if !$0 { fileToRename = nil } })) {
             TextField("Name", text: $editedName)
             Button("Cancel", role: .cancel) { fileToRename = nil }

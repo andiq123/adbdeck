@@ -79,7 +79,7 @@ struct ContentView: View {
                 do { try await Task.sleep(for: .seconds(3)) } catch { break }
             }
         }
-        .fileImporter(isPresented: $isImporting, allowedContentTypes: [UTType(filenameExtension: "apk") ?? .data]) { result in
+        .fileImporter(isPresented: $isImporting, allowedContentTypes: [UTType(filenameExtension: "apk") ?? .data, UTType(filenameExtension: "adbdeck") ?? .archive]) { result in
             guard case .success(let url) = result else { return }
             Task { await manager.install(url) }
         }
@@ -275,7 +275,7 @@ struct ContentView: View {
             ToolbarItemGroup {
                 Menu {
                     if detailMode == .apps {
-                        Button { isImporting = true } label: { Label("Install APK", systemImage: "square.and.arrow.down") }
+                        Button { isImporting = true } label: { Label("Install app package", systemImage: "square.and.arrow.down") }
                     } else {
                         Button(action: chooseUpload) { Label("Upload", systemImage: "square.and.arrow.up") }
                         Button {
@@ -472,8 +472,8 @@ struct ContentView: View {
 
     private func chooseDownloadFolder(for app: DeviceApp) {
         let panel = NSOpenPanel()
-        panel.title = "Save \(app.displayName) APK"
-        panel.prompt = "Save Here"
+        panel.title = "Clone \(app.displayName) for another device"
+        panel.prompt = "Clone Here"
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.canCreateDirectories = true
@@ -629,7 +629,7 @@ private struct AppRow: View {
             }
             Button(action: download) { Image(systemName: "square.and.arrow.down") }
                 .buttonStyle(.borderless)
-                .help("Download APK")
+                .help("Clone app package")
             Button(action: launch) { Image(systemName: "play.fill") }
                 .buttonStyle(.borderless)
                 .help("Open app")
@@ -645,7 +645,7 @@ private struct AppRow: View {
         .transition(.asymmetric(insertion: .move(edge: .top).combined(with: .opacity), removal: .scale(scale: 0.98).combined(with: .opacity)))
         .accessibilityHint(isNew ? "Newly installed" : isRemoving ? "Being removed" : "")
         .contextMenu {
-            Button("Download APK", action: download)
+            Button("Clone app package", action: download)
             Button("Open", action: launch)
             Divider()
             Button("Remove", role: .destructive, action: remove)

@@ -103,4 +103,16 @@ final class ParserTests: XCTestCase {
         XCTAssertEqual(endpoints.map(\.ip), ["192.168.1.40", "192.168.1.41"])
         XCTAssertEqual(endpoints.map(\.port), [5555, 37123])
     }
+
+    func testADBDeckAppPackageValidation() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data([1]).write(to: directory.appendingPathComponent("base.apk"))
+        try Data([2]).write(to: directory.appendingPathComponent("split_config.en.apk"))
+        let manifest = AppBackup.Manifest(formatVersion: 1, packageName: "com.example.app", displayName: "Example", files: ["base.apk", "split_config.en.apk"])
+        XCTAssertEqual(try AppBackup.apkURLs(for: manifest, in: directory).map(\.lastPathComponent), manifest.files)
+        XCTAssertThrowsError(try AppBackup.apkURLs(for: .init(formatVersion: 1, packageName: "com.example.app", displayName: "Example", files: ["../base.apk"]), in: directory))
+        XCTAssertEqual(AppBackup.safeName("TV/App: Demo"), "TV-App- Demo")
+    }
 }

@@ -393,6 +393,41 @@ struct OperationFailure: Identifiable, Equatable {
     let details: String
 }
 
+enum AppBackup {
+    struct Manifest: Codable, Equatable {
+        let formatVersion: Int
+        let packageName: String
+        let displayName: String
+        let files: [String]
+    }
+
+    static let manifestName = "manifest.json"
+
+    static func safeName(_ value: String) -> String {
+        let name = value.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
+        return name.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? "Android App"
+    }
+
+    static func apkURLs(for manifest: Manifest, in directory: URL) throws -> [URL] {
+        guard manifest.formatVersion == 1, !manifest.packageName.isEmpty, !manifest.files.isEmpty,
+              Set(manifest.files).count == manifest.files.count else {
+            throw ADBError.commandFailed("This ADB Deck app package has an invalid manifest.")
+        }
+        return try manifest.files.map { name in
+            guard name == URL(fileURLWithPath: name).lastPathComponent,
+                  URL(fileURLWithPath: name).pathExtension.lowercased() == "apk" else {
+                throw ADBError.commandFailed("The app package contains an unsafe file name.")
+            }
+            let url = directory.appendingPathComponent(name)
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+            guard values.isRegularFile == true, values.isSymbolicLink != true, (values.fileSize ?? 0) > 0 else {
+                throw ADBError.commandFailed("The app package is missing \(name).")
+            }
+            return url
+        }
+    }
+}
+
 enum ADBError: LocalizedError {
     case binaryMissing
     case commandFailed(String)
@@ -855,10 +890,15 @@ final class DeviceManager {
 
     func install(_ url: URL) async {
         guard let device = selectedDevice, device.adbState.isUsable else { return }
-        guard url.pathExtension.lowercased() == "apk",
+        let fileExtension = url.pathExtension.lowercased()
+        guard ["apk", "adbdeck"].contains(fileExtension),
               let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
               size > 0 else {
-            statusMessage = "Choose a valid APK file"
+            statusMessage = "Choose an APK or ADB Deck app package"
+            return
+        }
+        if fileExtension == "adbdeck" {
+            await installBackup(url, on: device)
             return
         }
         isWorking = true
@@ -898,18 +938,33 @@ final class DeviceManager {
             }
             guard !paths.isEmpty else { throw ADBError.commandFailed("The device did not return an APK path.") }
 
-            let destination = directory.appendingPathComponent(app.packageName, isDirectory: true)
-            try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+            let name = AppBackup.safeName(app.displayName)
+            let workspace = FileManager.default.temporaryDirectory.appendingPathComponent("ADBDeck-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: workspace) }
             for (index, remote) in paths.enumerated() {
                 let fileName = paths.count == 1 ? "\(app.packageName).apk" : URL(fileURLWithPath: remote).lastPathComponent
-                let local = destination.appendingPathComponent(fileName)
+                let local = workspace.appendingPathComponent(fileName)
                 transfer?.detail = paths.count == 1 ? "Downloading APK" : "Downloading \(index + 1) of \(paths.count) APKs"
                 let start = Double(index) / Double(paths.count)
-                let end = Double(index + 1) / Double(paths.count)
+                let end = paths.count == 1 ? 1 : Double(index + 1) / Double(paths.count + 1)
                 _ = try await adb.runStreaming(["-s", serial, "pull", remote, local.path], progress: progressHandler(from: start, to: end))
             }
+            let destination: URL
+            if paths.count == 1 {
+                destination = availableURL(named: name, extension: "apk", in: directory)
+                try FileManager.default.moveItem(at: workspace.appendingPathComponent("\(app.packageName).apk"), to: destination)
+            } else {
+                let files = paths.map { URL(fileURLWithPath: $0).lastPathComponent }
+                let manifest = AppBackup.Manifest(formatVersion: 1, packageName: app.packageName, displayName: app.displayName, files: files)
+                let data = try JSONEncoder().encode(manifest)
+                try data.write(to: workspace.appendingPathComponent(AppBackup.manifestName), options: .atomic)
+                destination = availableURL(named: name, extension: "adbdeck", in: directory)
+                transfer?.detail = "Bundling \(paths.count) APK components"
+                try await runLocal("/usr/bin/ditto", ["-c", "-k", "--sequesterRsrc", workspace.path, destination.path])
+            }
             transfer?.fraction = 1
-            statusMessage = "Saved \(paths.count == 1 ? "APK" : "APK bundle") to \(destination.path)"
+            statusMessage = "Saved installable \(destination.lastPathComponent)"
             try? await Task.sleep(for: .milliseconds(450))
             transfer = nil
             isWorking = false
@@ -920,6 +975,59 @@ final class DeviceManager {
             isWorking = false
             return nil
         }
+    }
+
+    private func installBackup(_ archive: URL, on device: AndroidDevice) async {
+        isWorking = true
+        let workspace = FileManager.default.temporaryDirectory.appendingPathComponent("ADBDeck-\(UUID().uuidString)", isDirectory: true)
+        transfer = TransferStatus(title: "Installing \(archive.deletingPathExtension().lastPathComponent)", detail: "Opening app package", fraction: 0.05)
+        do {
+            try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: workspace) }
+            try await runLocal("/usr/bin/ditto", ["-x", "-k", archive.path, workspace.path])
+            guard let manifestURL = try FileManager.default.contentsOfDirectory(at: workspace, includingPropertiesForKeys: nil)
+                .first(where: { $0.lastPathComponent == AppBackup.manifestName }) else {
+                throw ADBError.commandFailed("This file is not an ADB Deck app package.")
+            }
+            let manifest = try JSONDecoder().decode(AppBackup.Manifest.self, from: Data(contentsOf: manifestURL))
+            let apks = try AppBackup.apkURLs(for: manifest, in: workspace)
+            transfer = TransferStatus(title: "Installing \(manifest.displayName)", detail: "Sending \(apks.count) APK components to \(device.name)", fraction: 0.2)
+            let output = try await adb.runStreaming(["-s", device.serial, "install-multiple", "-r"] + apks.map(\.path), progress: progressHandler(from: 0.2, to: 1))
+            guard output.localizedCaseInsensitiveContains("success") else { throw ADBError.commandFailed(output) }
+            transfer?.fraction = 1
+            statusMessage = "Installed \(manifest.displayName)"
+            await loadApps()
+        } catch { report(error, operation: "Install \(archive.lastPathComponent)") }
+        try? await Task.sleep(for: .milliseconds(450))
+        transfer = nil
+        isWorking = false
+    }
+
+    private func availableURL(named name: String, extension fileExtension: String, in directory: URL) -> URL {
+        let first = directory.appendingPathComponent(name).appendingPathExtension(fileExtension)
+        guard FileManager.default.fileExists(atPath: first.path) else { return first }
+        for number in 2...999 {
+            let candidate = directory.appendingPathComponent("\(name) \(number)").appendingPathExtension(fileExtension)
+            if !FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+        }
+        return directory.appendingPathComponent("\(name) \(UUID().uuidString)").appendingPathExtension(fileExtension)
+    }
+
+    private func runLocal(_ executable: String, _ arguments: [String]) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            let process = Process()
+            let pipe = Pipe()
+            process.executableURL = URL(fileURLWithPath: executable)
+            process.arguments = arguments
+            process.standardOutput = pipe
+            process.standardError = pipe
+            try process.run()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else {
+                let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                throw ADBError.commandFailed(output.nilIfEmpty ?? "Could not create or open the app package.")
+            }
+        }.value
     }
 
     func uninstall(_ app: DeviceApp) async {

@@ -528,7 +528,7 @@ struct NetworkDiscovery {
         }
 
         let castModels = await castServiceModels()
-        for ip in serviceHosts.values.filter(\.castOpen).map(\.ip) {
+        for ip in serviceHosts.values.filter({ $0.castOpen }).map(\.ip) {
             let details = await castDetails(ip: ip)
             serviceHosts[ip]?.castName = details.name
             if let identifier = details.identifier?.replacingOccurrences(of: "-", with: "").lowercased() {
@@ -723,7 +723,7 @@ final class DeviceManager {
         results.sort(by: AndroidDevice.sidebarOrder)
         withAnimation(.snappy) { devices = results }
         if selection == nil || !results.contains(where: { $0.id == selection }) {
-            selection = results.first(where: \AndroidDevice.isAndroidLikely)?.id ?? results.first?.id
+            selection = results.first { $0.isAndroidLikely }?.id ?? results.first?.id
         }
         isRefreshing = false
         statusMessage = "Found \(results.count) network device\(results.count == 1 ? "" : "s")"

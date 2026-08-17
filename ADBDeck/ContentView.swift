@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+@MainActor
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
 
@@ -24,7 +25,7 @@ struct ContentView: View {
     @State private var manualAddress = ""
     @State private var showOtherDevices = false
 
-    private var androidDevices: [AndroidDevice] { manager.devices.filter(\.isAndroidLikely) }
+    private var androidDevices: [AndroidDevice] { manager.devices.filter { $0.isAndroidLikely } }
     private var otherDevices: [AndroidDevice] { manager.devices.filter { !$0.isAndroidLikely } }
 
     private var filteredApps: [DeviceApp] {

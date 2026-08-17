@@ -350,7 +350,8 @@ struct ContentView: View {
                         storage: manager.storage,
                         performance: manager.performance,
                         performanceError: manager.performanceError,
-                        isLoading: manager.isWorking
+                        isLoading: manager.isWorking,
+                        isMonitoringPaused: scenePhase != .active || manager.isWorking || manager.isRefreshing
                     )
                     .fixedSize(horizontal: false, vertical: true)
                     Divider()
@@ -811,6 +812,7 @@ private struct StorageSummary: View {
     let performance: DevicePerformance?
     let performanceError: String?
     let isLoading: Bool
+    let isMonitoringPaused: Bool
 
     var body: some View {
         Group {
@@ -869,11 +871,21 @@ private struct StorageSummary: View {
                 metric("Available", storage.free)
                 metric("Apps", storage.apps)
                 Divider().frame(height: 30)
-                vital("CPU", performance?.cpuFraction.map { "\(Int($0 * 100))%" } ?? "…", width: 54)
+                vital("CPU", performance?.cpuFraction.map { "\(Int($0 * 100))%" } ?? "…", fraction: performance?.cpuFraction, width: 64)
                 vital("RAM", performance.map {
                     "\(ByteCountFormatter.string(fromByteCount: $0.memoryUsed, countStyle: .memory)) / \(ByteCountFormatter.string(fromByteCount: $0.memoryTotal, countStyle: .memory))"
-                } ?? "—", width: 136)
+                } ?? "—", fraction: performance.map { $0.memoryTotal > 0 ? Double($0.memoryUsed) / Double($0.memoryTotal) : 0 }, width: 142)
+                if isMonitoringPaused {
+                    Image(systemName: "snowflake")
+                        .font(.caption.bold())
+                        .foregroundStyle(.cyan)
+                        .symbolEffect(.pulse)
+                        .help("Live CPU and RAM monitoring is paused. It resumes automatically when the current task finishes and ADB Deck is active.")
+                        .accessibilityLabel("Live monitoring paused")
+                }
         }
+        .opacity(isMonitoringPaused ? 0.6 : 1)
+        .animation(.smooth(duration: 0.2), value: isMonitoringPaused)
     }
 
     private func health(_ storage: DeviceStorage, showsText: Bool) -> some View {
@@ -899,15 +911,18 @@ private struct StorageSummary: View {
         .frame(minWidth: 70, alignment: .leading)
     }
 
-    private func vital(_ title: String, _ value: String, width: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+    private func vital(_ title: String, _ value: String, fraction: Double?, width: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
             Text(title).font(.caption).foregroundStyle(.secondary)
             Text(value)
                 .font(.callout.monospacedDigit().weight(.medium))
                 .contentTransition(.numericText())
+            ProgressView(value: fraction ?? 0)
+                .controlSize(.mini)
+                .tint(isMonitoringPaused ? .cyan : .accentColor)
         }
         .frame(width: width, alignment: .leading)
-        .help(performanceError ?? "Updates every 3 seconds while ADB Deck is active")
+        .help(performanceError ?? (isMonitoringPaused ? "Live monitoring paused; showing the last sample." : "Updates every 3 seconds while ADB Deck is active."))
     }
 }
 

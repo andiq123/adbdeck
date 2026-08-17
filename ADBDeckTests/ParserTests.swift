@@ -123,8 +123,24 @@ final class ParserTests: XCTestCase {
     func testAPKManifestPackageValidation() throws {
         let manifest = Data(base64Encoded: "AwAIAJQAAAABABwAVAAAAAMAAAAAAAAAAAEAACgAAAAAAAAAAAAAAAsAAAAVAAAACAhtYW5pZmVzdAAHB3BhY2thZ2UAEhJjb20uZXhhbXBsZS5wbGF5ZXIAAAACARAAOAAAAAEAAAD//////////wAAAAAUABQAAQAAAAAAAAD/////AQAAAAIAAAAIAAADAgAAAA==")!
         XCTAssertEqual(try APKManifest.packageName(in: manifest), "com.example.player")
+        XCTAssertEqual(try APKManifest.metadata(in: manifest).version, AppVersion(code: nil, name: nil))
         XCTAssertThrowsError(try APKManifest.packageName(in: manifest.prefix(24)))
         XCTAssertFalse(APKManifest.validPackageName("bad; command"))
+    }
+
+    func testVersionComparisonChoosesSafeInstallAction() {
+        let installed = AppVersion(code: 10, name: "1.0")
+        let update = InstallRequest(url: URL(fileURLWithPath: "/new.apk"), packageName: "com.example.app", incoming: AppVersion(code: 11, name: "1.1"), installed: installed)
+        XCTAssertEqual(update.mode, .update)
+        XCTAssertEqual(update.actionTitle, "Update")
+        XCTAssertTrue(update.summary.contains("keeps the app and its data"))
+
+        let downgrade = InstallRequest(url: URL(fileURLWithPath: "/old.apk"), packageName: "com.example.app", incoming: AppVersion(code: 9, name: "0.9"), installed: installed)
+        XCTAssertEqual(downgrade.mode, .replace)
+        XCTAssertEqual(downgrade.actionTitle, "Replace")
+        XCTAssertTrue(downgrade.summary.contains("older"))
+
+        XCTAssertEqual(PackageVersionParser.version("versionCode=42 minSdk=23\nversionName=2.4.0"), AppVersion(code: 42, name: "2.4.0"))
     }
 
     func testInstallOutputRequiresExactSuccessAndExplainsFailures() throws {

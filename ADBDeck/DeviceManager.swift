@@ -478,10 +478,65 @@ struct InstallRequest: Identifiable, Equatable {
     let id = UUID()
     let url: URL
     let packageName: String
+    let incoming: AppVersion
+    let installed: AppVersion
+
+    var isUpdate: Bool { incoming.code.map { new in installed.code.map { new > $0 } } == true }
+    var isSameVersion: Bool { incoming.code != nil && incoming.code == installed.code }
+    var actionTitle: String { isUpdate ? "Update" : isSameVersion ? "Reinstall" : "Replace" }
+    var mode: InstallMode { isUpdate || isSameVersion ? .update : .replace }
+
+    var summary: String {
+        let comparison = isUpdate ? "A newer version is ready to install." : isSameVersion ? "This version is already installed." : incoming.code != nil && installed.code != nil ? "This package is older than the installed app." : "The package version could not be compared safely."
+        let consequence = mode == .update
+            ? "\(actionTitle) keeps the app and its data."
+            : "Replace removes the installed app and all of its data first. If installation fails, the old app cannot be restored."
+        return "\(comparison)\n\nInstalled: \(installed.display)\nSelected: \(incoming.display)\n\n\(consequence)"
+    }
+}
+
+enum InstallMode: Sendable { case new, update, replace }
+
+struct AppVersion: Equatable, Sendable {
+    let code: Int64?
+    let name: String?
+
+    var display: String {
+        if let name, let code { return "\(name) (build \(code))" }
+        if let name { return name }
+        if let code { return "Build \(code)" }
+        return "Unknown"
+    }
+}
+
+enum PackageVersionParser {
+    static func version(_ output: String) -> AppVersion {
+        var code: Int64?
+        var name: String?
+        for line in output.split(separator: "\n") {
+            let value = line.trimmingCharacters(in: .whitespaces)
+            if value.hasPrefix("versionCode=") {
+                code = Int64(value.dropFirst(12).prefix { $0.isNumber })
+            } else if value.hasPrefix("versionName=") {
+                let parsed = String(value.dropFirst(12))
+                name = parsed == "null" || parsed.isEmpty ? nil : parsed
+            }
+        }
+        return AppVersion(code: code, name: name)
+    }
+}
+
+struct APKMetadata: Equatable, Sendable {
+    let packageName: String
+    let version: AppVersion
 }
 
 enum APKManifest {
     static func packageName(in data: Data) throws -> String {
+        try metadata(in: data).packageName
+    }
+
+    static func metadata(in data: Data) throws -> APKMetadata {
         guard data.u16(at: 0) == 0x0003 else { throw invalid }
         var offset = Int(data.u16(at: 2) ?? 8)
         var strings: [String] = []
@@ -494,15 +549,24 @@ enum APKManifest {
                let attributeStart = data.u16(at: offset + 24), let attributeSize = data.u16(at: offset + 26),
                let attributeCount = data.u16(at: offset + 28), attributeSize >= 20 {
                 let start = offset + 16 + Int(attributeStart)
+                var packageName: String?
+                var versionCode: Int64?
+                var versionName: String?
                 for index in 0..<Int(attributeCount) {
                     let attribute = start + index * Int(attributeSize)
                     guard attribute + 20 <= offset + Int(chunkSize) else { throw invalid }
-                    guard data.string(at: attribute + 4, from: strings) == "package" else { continue }
+                    guard let name = data.string(at: attribute + 4, from: strings) else { continue }
                     let raw = data.string(at: attribute + 8, from: strings)
                     let typed = data[attribute + 15] == 0x03 ? data.string(at: attribute + 16, from: strings) : nil
-                    guard let package = raw ?? typed, validPackageName(package) else { throw invalid }
-                    return package
+                    switch name {
+                    case "package": packageName = raw ?? typed
+                    case "versionName": versionName = raw ?? typed
+                    case "versionCode": versionCode = data.u32(at: attribute + 16).map(Int64.init)
+                    default: break
+                    }
                 }
+                guard let packageName, validPackageName(packageName) else { throw invalid }
+                return APKMetadata(packageName: packageName, version: AppVersion(code: versionCode, name: versionName))
             }
             offset += Int(chunkSize)
         }
@@ -1204,7 +1268,7 @@ final class DeviceManager {
         }
     }
 
-    func install(_ url: URL, replacing: Bool = false) async {
+    func install(_ url: URL, mode: InstallMode = .new) async {
         guard let device = selectedDevice, device.adbState.isUsable else {
             report(ADBError.commandFailed("Select and connect an authorized ADB device before installing an app."), operation: "Install app")
             return
@@ -1224,15 +1288,17 @@ final class DeviceManager {
         let packageName: String
         var removedExistingApp = false
         do {
-            packageName = try await packageIdentifier(in: url)
+            let metadata = try await packageMetadata(in: url)
+            packageName = metadata.packageName
             let output = try await adb.run(["-s", device.serial, "shell", "pm", "list", "packages", packageName])
             let installed = output.split(separator: "\n").contains("package:\(packageName)")
-            if installed && !replacing {
+            if installed && mode == .new {
+                let details = try await adb.run(["-s", device.serial, "shell", "dumpsys package \(RemoteFiles.shellQuote(packageName))"])
                 endActivity(ownsActivity)
-                pendingReplacement = InstallRequest(url: url, packageName: packageName)
+                pendingReplacement = InstallRequest(url: url, packageName: packageName, incoming: metadata.version, installed: PackageVersionParser.version(details))
                 return
             }
-            if installed {
+            if installed && mode == .replace {
                 transfer = TransferStatus(title: "Replacing \(packageName)", detail: "Removing the installed app and its data", fraction: nil)
                 let uninstall = try await adb.run(["-s", device.serial, "uninstall", packageName])
                 try InstallOutput.requireSuccess(uninstall)
@@ -1273,14 +1339,14 @@ final class DeviceManager {
         isWorking = false
     }
 
-    private func packageIdentifier(in archive: URL) async throws -> String {
+    private func packageMetadata(in archive: URL) async throws -> APKMetadata {
         if archive.pathExtension.lowercased() == "adbdeck" {
-            return try await validatedBackup(at: archive).packageName
+            return try await validatedBackup(at: archive)
         }
-        return try APKManifest.packageName(in: await archiveEntry("AndroidManifest.xml", in: archive))
+        return try APKManifest.metadata(in: await archiveEntry("AndroidManifest.xml", in: archive))
     }
 
-    private func validatedBackup(at archive: URL) async throws -> AppBackup.Manifest {
+    private func validatedBackup(at archive: URL) async throws -> APKMetadata {
         let entries = try await runLocalOutput("/usr/bin/unzip", ["-Z1", archive.path])
         guard entries.split(separator: "\n").allSatisfy({ entry in
             !entry.hasPrefix("/") && !entry.split(separator: "/", omittingEmptySubsequences: false).contains("..")
@@ -1301,13 +1367,16 @@ final class DeviceManager {
             throw ADBError.commandFailed("The ADB Deck package manifest is damaged or unreadable.")
         }
         let apks = try AppBackup.apkURLs(for: manifest, in: workspace)
+        var baseMetadata: APKMetadata?
         for apk in apks {
-            let package = try APKManifest.packageName(in: await archiveEntry("AndroidManifest.xml", in: apk))
-            guard package == manifest.packageName else {
-                throw ADBError.commandFailed("\(apk.lastPathComponent) belongs to \(package), not \(manifest.packageName).")
+            let metadata = try APKManifest.metadata(in: await archiveEntry("AndroidManifest.xml", in: apk))
+            guard metadata.packageName == manifest.packageName else {
+                throw ADBError.commandFailed("\(apk.lastPathComponent) belongs to \(metadata.packageName), not \(manifest.packageName).")
             }
+            if apk.lastPathComponent == "base.apk" || baseMetadata == nil { baseMetadata = metadata }
         }
-        return manifest
+        guard let baseMetadata else { throw ADBError.commandFailed("The app package has no readable APK components.") }
+        return baseMetadata
     }
 
     private func archiveEntry(_ entry: String, in archive: URL) async throws -> Data {

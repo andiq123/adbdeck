@@ -116,14 +116,14 @@ struct ContentView: View {
 
     private var destructiveAlertContent: some View {
         navigationContent
-        .alert("Replace installed app?", isPresented: Binding(get: { manager.pendingReplacement != nil }, set: { if !$0 { manager.pendingReplacement = nil } }), presenting: manager.pendingReplacement) { request in
+        .alert("App already installed", isPresented: Binding(get: { manager.pendingReplacement != nil }, set: { if !$0 { manager.pendingReplacement = nil } }), presenting: manager.pendingReplacement) { request in
             Button("Cancel", role: .cancel) { manager.pendingReplacement = nil }
-            Button("Replace", role: .destructive) {
+            Button(request.actionTitle, role: request.mode == .replace ? .destructive : nil) {
                 manager.pendingReplacement = nil
-                Task { await manager.install(request.url, replacing: true) }
+                Task { await manager.install(request.url, mode: request.mode) }
             }
         } message: { request in
-            Text("\(request.packageName) is already installed on \(manager.selectedDevice?.name ?? "this device"). Replace removes the existing app and all of its data first. If the new installation fails, the old app cannot be restored.")
+            Text(request.summary)
         }
         .alert("Remove app?", isPresented: Binding(get: { appToRemove != nil }, set: { if !$0 { appToRemove = nil } }), presenting: appToRemove) { app in
             Button("Cancel", role: .cancel) { appToRemove = nil }

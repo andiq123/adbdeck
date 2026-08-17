@@ -72,6 +72,8 @@ final class ParserTests: XCTestCase {
         XCTAssertEqual(capacity?.used, 768_000_000)
         XCTAssertEqual(capacity?.free, 256_000_000)
         XCTAssertEqual(capacity?.apps, 381)
+        XCTAssertEqual(StorageParser.apkStorage("com.example.fresh\t55476224\ninvalid\n")["com.example.fresh"]?.total, 55_476_224)
+        XCTAssertEqual(StorageParser.apkStorage("com.example.fresh\t55476224")["com.example.fresh"]?.isEstimate, true)
     }
 
     func testPerformanceParsingAndCPUDelta() {

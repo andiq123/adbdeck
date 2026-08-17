@@ -623,11 +623,13 @@ private struct AppRow: View {
             }
             if app.isSystem { Text("System").font(.caption).foregroundStyle(.secondary) }
             if let storage = app.storage {
-                Text(ByteCountFormatter.string(fromByteCount: storage.total, countStyle: .file))
+                Text((storage.isEstimate ? "≈ " : "") + ByteCountFormatter.string(fromByteCount: storage.total, countStyle: .file))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
                     .frame(width: 78, alignment: .trailing)
-                    .help("App: \(ByteCountFormatter.string(fromByteCount: storage.code, countStyle: .file))\nData: \(ByteCountFormatter.string(fromByteCount: storage.data, countStyle: .file))\nCache: \(ByteCountFormatter.string(fromByteCount: storage.cache, countStyle: .file))")
+                    .help(storage.isEstimate
+                          ? "APK files: \(ByteCountFormatter.string(fromByteCount: storage.code, countStyle: .file))\nAndroid has not reported data and cache yet."
+                          : "App: \(ByteCountFormatter.string(fromByteCount: storage.code, countStyle: .file))\nData: \(ByteCountFormatter.string(fromByteCount: storage.data, countStyle: .file))\nCache: \(ByteCountFormatter.string(fromByteCount: storage.cache, countStyle: .file))")
             } else {
                 Text("—").foregroundStyle(.tertiary).frame(width: 78, alignment: .trailing)
             }

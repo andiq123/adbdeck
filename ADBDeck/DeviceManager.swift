@@ -152,6 +152,7 @@ struct AppStorage: Hashable, Sendable {
     let code: Int64
     let data: Int64
     let cache: Int64
+    var isEstimate = false
     var total: Int64 { code + data + cache }
 }
 
@@ -240,6 +241,14 @@ enum StorageParser {
         let count = [packages.count, code.count, data.count, cache.count].min() ?? 0
         return Dictionary(uniqueKeysWithValues: (0..<count).map {
             (packages[$0], AppStorage(code: code[$0], data: data[$0], cache: cache[$0]))
+        })
+    }
+
+    static func apkStorage(_ output: String) -> [String: AppStorage] {
+        Dictionary(uniqueKeysWithValues: output.split(separator: "\n").compactMap { line in
+            let fields = line.split(whereSeparator: \.isWhitespace)
+            guard fields.count == 2, let bytes = Int64(fields[1]), bytes > 0 else { return nil }
+            return (String(fields[0]), AppStorage(code: bytes, data: 0, cache: 0, isEstimate: true))
         })
     }
 
@@ -1253,7 +1262,17 @@ final class DeviceManager {
         async let capacityTask = adb.run(["-s", serial, "shell", "df -k /data"])
         async let statsTask = adb.run(["-s", serial, "shell", "dumpsys diskstats"])
         let (capacityOutput, statsOutput) = try await (capacityTask, statsTask)
-        let appStorage = StorageParser.appStorage(statsOutput)
+        var appStorage = StorageParser.appStorage(statsOutput)
+        let missing = apps.filter { !$0.isSystem && appStorage[$0.packageName] == nil }.map(\.packageName)
+        if !missing.isEmpty {
+            let commands = missing.map {
+                let package = RemoteFiles.shellQuote($0)
+                return "du -sk $(pm path \(package) | cut -d: -f2) 2>/dev/null | awk -v p=\(package) '{s+=$1} END {if(s) print p \"\\t\" s*1024}'"
+            }
+            if let output = try? await adb.run(["-s", serial, "shell", commands.joined(separator: "; ")]) {
+                appStorage.merge(StorageParser.apkStorage(output)) { current, _ in current }
+            }
+        }
         guard let capacity = StorageParser.capacity(capacityOutput, appBytes: appStorage.values.reduce(0) { $0 + $1.total }) else {
             throw ADBError.commandFailed("Android returned an unsupported storage report.\n\n\(capacityOutput)")
         }

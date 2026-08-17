@@ -17,9 +17,5 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v6
-      - name: Install XcodeGen
-        run: brew install xcodegen
       - name: Test
-        run: |
-          xcodegen generate
-          xcodebuild -project ADBDeck.xcodeproj -scheme ADBDeck -destination 'platform=macOS' test
+        run: xcodebuild -project ADBDeck.xcodeproj -scheme ADBDeck -destination 'platform=macOS' test

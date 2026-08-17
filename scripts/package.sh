@@ -10,7 +10,6 @@ app="$dist/$product.app"
 identity="${SIGN_IDENTITY:--}"
 
 cd "$project_root"
-xcodegen generate
 xcodebuild -project ADBDeck.xcodeproj -scheme ADBDeck -configuration Release \
   -derivedDataPath "$build_root" CODE_SIGNING_ALLOWED=NO build
 

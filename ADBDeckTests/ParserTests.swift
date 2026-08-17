@@ -157,4 +157,13 @@ final class ParserTests: XCTestCase {
         XCTAssertNil(dates["com.example.unknown"]?.installed)
     }
 
+    func testOptimizationReportsOnlyRecoveredResources() {
+        let recovered = OptimizationResult(freeBefore: 1_000, freeAfter: 1_600, memoryBefore: 900, memoryAfter: 500)
+        XCTAssertEqual(recovered.storageRecovered, 600)
+        XCTAssertEqual(recovered.memoryReleased, 400)
+        let unchanged = OptimizationResult(freeBefore: 1_000, freeAfter: 900, memoryBefore: 500, memoryAfter: 700)
+        XCTAssertEqual(unchanged.storageRecovered, 0)
+        XCTAssertEqual(unchanged.memoryReleased, 0)
+    }
+
 }

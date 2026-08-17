@@ -436,6 +436,17 @@ struct OperationFailure: Identifiable, Equatable {
     let details: String
 }
 
+struct OptimizationResult: Identifiable, Equatable {
+    let id = UUID()
+    let storageRecovered: Int64?
+    let memoryReleased: Int64?
+
+    init(freeBefore: Int64?, freeAfter: Int64?, memoryBefore: Int64?, memoryAfter: Int64?) {
+        storageRecovered = freeBefore.flatMap { before in freeAfter.map { max($0 - before, 0) } }
+        memoryReleased = memoryBefore.flatMap { before in memoryAfter.map { max(before - $0, 0) } }
+    }
+}
+
 struct InstallRequest: Identifiable, Equatable {
     let id = UUID()
     let url: URL
@@ -911,6 +922,7 @@ final class DeviceManager {
     var currentPath = "/sdcard"
     var fileClipboard: RemoteClipboard?
     var lastError: OperationFailure?
+    var optimizationResult: OptimizationResult?
     var pendingReplacement: InstallRequest?
     var storage: DeviceStorage?
     var performance: DevicePerformance?
@@ -989,15 +1001,19 @@ final class DeviceManager {
     }
 
     func loadApps() async {
-        storage = nil
         guard let device = selectedDevice, device.adbState.isUsable else {
+            storage = nil
             apps = []
             loadedAppsDeviceID = nil
             return
         }
         let isSameList = loadedAppsDeviceID == device.id && loadedSystemAppsSetting == showSystemApps
         let previousPackages = isSameList ? Set(apps.map(\.packageName)) : []
+        let previousStorage = isSameList ? Dictionary(uniqueKeysWithValues: apps.compactMap { app in
+            app.storage.map { (app.packageName, $0) }
+        }) : [:]
         if !isSameList {
+            storage = nil
             apps = []
             recentlyAddedApps = []
             removingApps = []
@@ -1017,10 +1033,21 @@ final class DeviceManager {
                 loaded[index].installedAt = dates[loaded[index].packageName]?.installed
                 loaded[index].updatedAt = dates[loaded[index].packageName]?.updated
             }
+            var snapshot: (device: DeviceStorage, apps: [String: AppStorage])?
+            do {
+                snapshot = try await storageSnapshot(on: device, apps: loaded)
+            } catch {
+                report(error, operation: "Read storage")
+            }
+            guard selectedDevice?.id == device.id else { return }
+            for index in loaded.indices {
+                loaded[index].storage = snapshot?.apps[loaded[index].packageName] ?? previousStorage[loaded[index].packageName]
+            }
             loaded.sort { $0.packageName.localizedCaseInsensitiveCompare($1.packageName) == .orderedAscending }
             let added = previousPackages.isEmpty ? [] : Set(loaded.map(\.packageName)).subtracting(previousPackages)
             withAnimation(.smooth) {
                 apps = loaded
+                if let snapshot { storage = snapshot.device }
                 recentlyAddedApps.formUnion(added)
             }
             loadedAppsDeviceID = device.id
@@ -1034,7 +1061,6 @@ final class DeviceManager {
                     withAnimation(.smooth) { recentlyAddedApps.subtract(added) }
                 }
             }
-            await loadStorage()
         } catch { report(error, operation: "Load apps") }
     }
 
@@ -1044,7 +1070,7 @@ final class DeviceManager {
         let ownsActivity = beginActivity("Reading storage", detail: device.name)
         defer { endActivity(ownsActivity) }
         do {
-            let snapshot = try await storageSnapshot(on: device)
+            let snapshot = try await storageSnapshot(on: device, apps: apps)
             guard selectedDevice?.id == device.id else { return false }
             storage = snapshot.device
             apps = apps.map { app in
@@ -1078,6 +1104,39 @@ final class DeviceManager {
         } catch {
             performance = nil
             performanceError = error.localizedDescription
+        }
+    }
+
+    func optimizeDevice() async {
+        guard let device = selectedDevice, device.adbState.isUsable else {
+            report(ADBError.commandFailed("Select and connect an authorized ADB device before optimizing it."), operation: "Optimize device")
+            return
+        }
+        let freeBefore = storage?.free
+        let memoryBefore = performance?.memoryUsed
+        optimizationResult = nil
+        let ownsActivity = beginActivity("Optimizing \(device.name)", detail: "Closing cached background apps", fraction: 0.15)
+        do {
+            _ = try await adb.run(["-s", device.serial, "shell", "am kill-all"])
+            transfer?.detail = "Clearing temporary app caches"
+            transfer?.fraction = 0.5
+            _ = try await adb.run(["-s", device.serial, "shell", "pm trim-caches 999G"])
+            transfer?.detail = "Refreshing storage and memory"
+            transfer?.fraction = 0.85
+            endActivity(ownsActivity)
+            guard await loadStorage() else { return }
+            await loadPerformance()
+            guard selectedDevice?.id == device.id else { return }
+            optimizationResult = OptimizationResult(
+                freeBefore: freeBefore,
+                freeAfter: storage?.free,
+                memoryBefore: memoryBefore,
+                memoryAfter: performance?.memoryUsed
+            )
+            statusMessage = "Optimized \(device.name)"
+        } catch {
+            endActivity(ownsActivity)
+            report(error, operation: "Optimize \(device.name)")
         }
     }
 
@@ -1560,13 +1619,13 @@ final class DeviceManager {
         }
     }
 
-    private func storageSnapshot(on device: AndroidDevice) async throws -> (device: DeviceStorage, apps: [String: AppStorage]) {
+    private func storageSnapshot(on device: AndroidDevice, apps listedApps: [DeviceApp]) async throws -> (device: DeviceStorage, apps: [String: AppStorage]) {
         let serial = device.serial
         async let capacityTask = adb.run(["-s", serial, "shell", "df -k /data"])
         async let statsTask = adb.run(["-s", serial, "shell", "dumpsys diskstats"])
         let (capacityOutput, statsOutput) = try await (capacityTask, statsTask)
         var appStorage = StorageParser.appStorage(statsOutput)
-        let missing = apps.filter { !$0.isSystem && appStorage[$0.packageName] == nil }.map(\.packageName)
+        let missing = listedApps.filter { !$0.isSystem && appStorage[$0.packageName] == nil }.map(\.packageName)
         if !missing.isEmpty {
             let commands = missing.map {
                 let package = RemoteFiles.shellQuote($0)

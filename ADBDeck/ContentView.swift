@@ -29,6 +29,7 @@ struct ContentView: View {
     @State private var showAddDevice = false
     @State private var manualAddress = ""
     @State private var showOtherDevices = false
+    @State private var showOptimizeConfirmation = false
 
     private var androidDevices: [AndroidDevice] { manager.devices.filter { $0.isAndroidLikely } }
     private var otherDevices: [AndroidDevice] { manager.devices.filter { !$0.isAndroidLikely } }
@@ -143,7 +144,7 @@ struct ContentView: View {
     }
 
     private var presentedContent: some View {
-        destructiveAlertContent
+        optimizationAlertContent
         .alert("Rename", isPresented: Binding(get: { fileToRename != nil }, set: { if !$0 { fileToRename = nil } })) {
             TextField("Name", text: $editedName)
             Button("Cancel", role: .cancel) { fileToRename = nil }
@@ -159,6 +160,29 @@ struct ContentView: View {
             Button("Create") { Task { await manager.createFolder(named: newFolderName) } }
         }
         .sheet(item: Binding(get: { manager.lastError }, set: { manager.lastError = $0 })) { failure in
+            failureSheet(failure)
+        }
+        .sheet(isPresented: $showAddDevice) {
+            addDeviceSheet
+        }
+    }
+
+    private var optimizationAlertContent: some View {
+        destructiveAlertContent
+        .alert("Optimize device?", isPresented: $showOptimizeConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Optimize") { Task { await manager.optimizeDevice() } }
+        } message: {
+            Text("This asks Android to close cached background apps and remove temporary app caches. Installed apps and personal data are kept; apps may open more slowly once while caches rebuild.")
+        }
+        .alert("Optimization complete", isPresented: Binding(get: { manager.optimizationResult != nil }, set: { if !$0 { manager.optimizationResult = nil } }), presenting: manager.optimizationResult) { _ in
+            Button("Done") { manager.optimizationResult = nil }
+        } message: { result in
+            Text(optimizationSummary(result))
+        }
+    }
+
+    private func failureSheet(_ failure: OperationFailure) -> some View {
             VStack(alignment: .leading, spacing: 16) {
                 Label("\(failure.operation) failed", systemImage: "exclamationmark.triangle.fill")
                     .font(.title2.bold())
@@ -183,8 +207,9 @@ struct ContentView: View {
             }
             .padding(24)
             .frame(minWidth: 620, minHeight: 360)
-        }
-        .sheet(isPresented: $showAddDevice) {
+    }
+
+    private var addDeviceSheet: some View {
             VStack(alignment: .leading, spacing: 18) {
                 Label("Add ADB device", systemImage: "plus.rectangle.on.rectangle")
                     .font(.title2.bold())
@@ -201,7 +226,6 @@ struct ContentView: View {
             }
             .padding(24)
             .frame(width: 390)
-        }
     }
 
     private var sidebar: some View {
@@ -336,6 +360,9 @@ struct ContentView: View {
                     }
                     .disabled(!device.adbState.isUsable || manager.isWorking)
                 }
+                Button { showOptimizeConfirmation = true } label: { Label("Optimize", systemImage: "wand.and.stars") }
+                    .help("Close cached background apps and clear temporary caches")
+                    .disabled(!device.adbState.isUsable || manager.isWorking)
                 Button { Task { await reloadDetail() } } label: { Label("Reload", systemImage: "arrow.clockwise") }
                     .disabled(!device.adbState.isUsable || manager.isWorking)
             }
@@ -506,6 +533,12 @@ struct ContentView: View {
             await manager.loadFiles()
             await manager.loadStorage()
         }
+    }
+
+    private func optimizationSummary(_ result: OptimizationResult) -> String {
+        let storage = result.storageRecovered.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "Unavailable"
+        let memory = result.memoryReleased.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .memory) } ?? "Unavailable"
+        return "Temporary storage recovered: \(storage)\nMemory released now: \(memory)\n\nAndroid may reuse memory as apps restart."
     }
 
     private func chooseUpload() {

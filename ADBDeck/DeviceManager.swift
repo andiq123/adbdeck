@@ -548,6 +548,44 @@ enum ADBError: LocalizedError {
     }
 }
 
+enum InstallOutput {
+    static func requireSuccess(_ output: String, removedExistingApp: Bool = false) throws {
+        let succeeded = output.split(separator: "\n").contains {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).localizedCaseInsensitiveCompare("Success") == .orderedSame
+        }
+        guard succeeded else { throw ADBError.commandFailed(details(for: output, removedExistingApp: removedExistingApp)) }
+    }
+
+    static func details(for output: String, removedExistingApp: Bool = false) -> String {
+        let value = output.lowercased()
+        let reason: String
+        if value.contains("install_failed_insufficient_storage") {
+            reason = "The device does not have enough free storage. Free some space, then try again."
+        } else if value.contains("install_failed_no_matching_abis") {
+            reason = "This app does not support the device’s processor architecture."
+        } else if value.contains("install_failed_older_sdk") {
+            reason = "This app requires a newer Android version than the device provides."
+        } else if value.contains("install_failed_missing_split") {
+            reason = "This app is missing required APK components. Install its complete .adbdeck package instead."
+        } else if value.contains("install_failed_update_incompatible") {
+            reason = "The installed app and this package use different signatures. Choose Replace to remove the old app first."
+        } else if value.contains("install_failed_version_downgrade") {
+            reason = "This package is older than the installed version. Choose Replace if you want to downgrade."
+        } else if value.contains("install_parse_failed") || value.contains("failed to parse") {
+            reason = "Android could not read this package. It may be damaged or incomplete."
+        } else if value.contains("unauthorized") {
+            reason = "The device has not authorized this Mac. Accept the debugging prompt on the device, then retry."
+        } else if value.contains("device offline") || value.contains("no devices/emulators") {
+            reason = "The device disconnected during installation. Reconnect it, then retry."
+        } else {
+            reason = "Android rejected the app package."
+        }
+        let replacement = removedExistingApp ? "\n\nThe previous app and its local data were already removed." : ""
+        let response = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "\(reason)\(replacement)\n\nDevice response:\n\(response.isEmpty ? "No details returned." : response)"
+    }
+}
+
 struct ADBClient: Sendable {
     static var binaryURL: URL? {
         if let bundled = Bundle.main.url(forResource: "adb", withExtension: nil, subdirectory: "platform-tools") {
@@ -1002,17 +1040,26 @@ final class DeviceManager {
     }
 
     func install(_ url: URL, replacing: Bool = false) async {
-        guard let device = selectedDevice, device.adbState.isUsable else { return }
+        guard let device = selectedDevice, device.adbState.isUsable else {
+            report(ADBError.commandFailed("Select and connect an authorized ADB device before installing an app."), operation: "Install app")
+            return
+        }
+        lastError = nil
         let fileExtension = url.pathExtension.lowercased()
-        guard ["apk", "adbdeck"].contains(fileExtension),
-              let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
-              size > 0 else {
-            statusMessage = "Choose an APK or ADB Deck app package"
+        guard ["apk", "adbdeck"].contains(fileExtension) else {
+            report(ADBError.commandFailed("Choose an .apk or .adbdeck app package."), operation: "Open \(url.lastPathComponent)")
+            return
+        }
+        guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]),
+              values.isRegularFile == true, values.isSymbolicLink != true, (values.fileSize ?? 0) > 0 else {
+            report(ADBError.commandFailed("The selected package is empty, unavailable, or is not a regular file."), operation: "Open \(url.lastPathComponent)")
             return
         }
         let ownsActivity = beginActivity("Checking \(url.lastPathComponent)", detail: "Validating package on \(device.name)")
+        let packageName: String
+        var removedExistingApp = false
         do {
-            let packageName = try await packageName(in: url)
+            packageName = try await packageIdentifier(in: url)
             let output = try await adb.run(["-s", device.serial, "shell", "pm", "list", "packages", packageName])
             let installed = output.split(separator: "\n").contains("package:\(packageName)")
             if installed && !replacing {
@@ -1023,7 +1070,8 @@ final class DeviceManager {
             if installed {
                 transfer = TransferStatus(title: "Replacing \(packageName)", detail: "Removing the installed app and its data", fraction: nil)
                 let uninstall = try await adb.run(["-s", device.serial, "uninstall", packageName])
-                guard uninstall.localizedCaseInsensitiveContains("success") else { throw ADBError.commandFailed(uninstall) }
+                try InstallOutput.requireSuccess(uninstall)
+                removedExistingApp = true
                 withAnimation(.smooth) { apps.removeAll { $0.packageName == packageName } }
             }
         } catch {
@@ -1033,7 +1081,7 @@ final class DeviceManager {
         }
         endActivity(ownsActivity)
         if fileExtension == "adbdeck" {
-            await installBackup(url, on: device)
+            await installBackup(url, packageName: packageName, removedExistingApp: removedExistingApp, on: device)
             return
         }
         isWorking = true
@@ -1045,28 +1093,56 @@ final class DeviceManager {
             _ = try await adb.runStreaming(["-s", serial, "push", url.path, remote], progress: progressHandler(from: 0, to: 0.88))
             transfer = TransferStatus(title: "Installing \(url.lastPathComponent)", detail: "Verifying package on \(device.name)", fraction: 0.92)
             let output = try await adb.run(["-s", serial, "shell", "pm", "install", "-r", remote])
-            guard output.localizedCaseInsensitiveContains("success") else { throw ADBError.commandFailed(output) }
+            try InstallOutput.requireSuccess(output, removedExistingApp: removedExistingApp)
+            try await verifyInstalled(packageName, on: device)
             _ = try? await adb.run(["-s", serial, "shell", "rm", remote])
             transfer?.fraction = 1
             statusMessage = "Installed \(url.lastPathComponent)"
             await loadApps()
         } catch {
             _ = try? await adb.run(["-s", serial, "shell", "rm", remote])
-            report(error, operation: "Install \(url.lastPathComponent)")
+            report(installationError(error, removedExistingApp: removedExistingApp), operation: "Install \(url.lastPathComponent)")
         }
         try? await Task.sleep(for: .milliseconds(450))
         transfer = nil
         isWorking = false
     }
 
-    private func packageName(in archive: URL) async throws -> String {
+    private func packageIdentifier(in archive: URL) async throws -> String {
         if archive.pathExtension.lowercased() == "adbdeck" {
-            let data = try await archiveEntry(AppBackup.manifestName, in: archive)
-            let package = try JSONDecoder().decode(AppBackup.Manifest.self, from: data).packageName
-            guard APKManifest.validPackageName(package) else { throw ADBError.commandFailed("The ADB Deck package has an invalid application ID.") }
-            return package
+            return try await validatedBackup(at: archive).packageName
         }
         return try APKManifest.packageName(in: await archiveEntry("AndroidManifest.xml", in: archive))
+    }
+
+    private func validatedBackup(at archive: URL) async throws -> AppBackup.Manifest {
+        let entries = try await runLocalOutput("/usr/bin/unzip", ["-Z1", archive.path])
+        guard entries.split(separator: "\n").allSatisfy({ entry in
+            !entry.hasPrefix("/") && !entry.split(separator: "/", omittingEmptySubsequences: false).contains("..")
+        }) else { throw ADBError.commandFailed("The ADB Deck package contains an unsafe file path.") }
+
+        let workspace = FileManager.default.temporaryDirectory.appendingPathComponent("ADBDeck-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspace) }
+        try await runLocal("/usr/bin/ditto", ["-x", "-k", archive.path, workspace.path])
+        let manifestURL = workspace.appendingPathComponent(AppBackup.manifestName)
+        guard FileManager.default.isReadableFile(atPath: manifestURL.path) else {
+            throw ADBError.commandFailed("This file is not an ADB Deck app package: \(AppBackup.manifestName) is missing.")
+        }
+        let manifest: AppBackup.Manifest
+        do {
+            manifest = try JSONDecoder().decode(AppBackup.Manifest.self, from: Data(contentsOf: manifestURL))
+        } catch {
+            throw ADBError.commandFailed("The ADB Deck package manifest is damaged or unreadable.")
+        }
+        let apks = try AppBackup.apkURLs(for: manifest, in: workspace)
+        for apk in apks {
+            let package = try APKManifest.packageName(in: await archiveEntry("AndroidManifest.xml", in: apk))
+            guard package == manifest.packageName else {
+                throw ADBError.commandFailed("\(apk.lastPathComponent) belongs to \(package), not \(manifest.packageName).")
+            }
+        }
+        return manifest
     }
 
     private func archiveEntry(_ entry: String, in archive: URL) async throws -> Data {
@@ -1148,7 +1224,7 @@ final class DeviceManager {
         }
     }
 
-    private func installBackup(_ archive: URL, on device: AndroidDevice) async {
+    private func installBackup(_ archive: URL, packageName: String, removedExistingApp: Bool, on device: AndroidDevice) async {
         isWorking = true
         let workspace = FileManager.default.temporaryDirectory.appendingPathComponent("ADBDeck-\(UUID().uuidString)", isDirectory: true)
         transfer = TransferStatus(title: "Installing \(archive.deletingPathExtension().lastPathComponent)", detail: "Opening app package", fraction: 0.05)
@@ -1165,11 +1241,14 @@ final class DeviceManager {
             let apks = try AppBackup.apkURLs(for: manifest, in: workspace)
             transfer = TransferStatus(title: "Installing \(manifest.displayName)", detail: "Sending \(apks.count) APK components to \(device.name)", fraction: 0.2)
             let output = try await adb.runStreaming(["-s", device.serial, "install-multiple", "-r"] + apks.map(\.path), progress: progressHandler(from: 0.2, to: 1))
-            guard output.localizedCaseInsensitiveContains("success") else { throw ADBError.commandFailed(output) }
+            try InstallOutput.requireSuccess(output, removedExistingApp: removedExistingApp)
+            try await verifyInstalled(packageName, on: device)
             transfer?.fraction = 1
             statusMessage = "Installed \(manifest.displayName)"
             await loadApps()
-        } catch { report(error, operation: "Install \(archive.lastPathComponent)") }
+        } catch {
+            report(installationError(error, removedExistingApp: removedExistingApp), operation: "Install \(archive.lastPathComponent)")
+        }
         try? await Task.sleep(for: .milliseconds(450))
         transfer = nil
         isWorking = false
@@ -1186,6 +1265,10 @@ final class DeviceManager {
     }
 
     private func runLocal(_ executable: String, _ arguments: [String]) async throws {
+        _ = try await runLocalOutput(executable, arguments)
+    }
+
+    private func runLocalOutput(_ executable: String, _ arguments: [String]) async throws -> String {
         try await Task.detached(priority: .userInitiated) {
             let process = Process()
             let pipe = Pipe()
@@ -1194,21 +1277,22 @@ final class DeviceManager {
             process.standardOutput = pipe
             process.standardError = pipe
             try process.run()
+            let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
             process.waitUntilExit()
             guard process.terminationStatus == 0 else {
-                let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
                 throw ADBError.commandFailed(output.nilIfEmpty ?? "Could not create or open the app package.")
             }
+            return output
         }.value
     }
 
     func uninstall(_ app: DeviceApp) async {
         guard let device = selectedDevice else { return }
         let ownsActivity = beginActivity("Removing \(app.displayName)", detail: "From \(device.name)")
-        withAnimation(.smooth) { removingApps.insert(app.packageName) }
+        _ = withAnimation(.smooth) { removingApps.insert(app.packageName) }
         defer {
             endActivity(ownsActivity)
-            withAnimation(.smooth) { removingApps.remove(app.packageName) }
+            _ = withAnimation(.smooth) { removingApps.remove(app.packageName) }
         }
         do {
             _ = try await adb.run(["-s", device.serial, "uninstall", app.packageName])
@@ -1404,6 +1488,25 @@ final class DeviceManager {
         let details = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
         lastError = OperationFailure(operation: operation, details: details.isEmpty ? "The operation failed without an error message." : details)
         statusMessage = "\(operation) failed"
+    }
+
+    private func verifyInstalled(_ packageName: String, on device: AndroidDevice) async throws {
+        let output = try await adb.run(["-s", device.serial, "shell", "pm", "path", packageName])
+        guard output.split(separator: "\n").contains(where: {
+            let line = $0.trimmingCharacters(in: .whitespacesAndNewlines)
+            return line.hasPrefix("package:") && line.hasSuffix(".apk")
+        }) else {
+            throw ADBError.commandFailed("Android reported success, but \(packageName) could not be found on the device afterward.\n\nDevice response:\n\(output.nilIfEmpty ?? "No package path returned.")")
+        }
+    }
+
+    private func installationError(_ error: Error, removedExistingApp: Bool) -> Error {
+        let message = error.localizedDescription
+        if !message.contains("Device response:"), message.lowercased().contains("install_") {
+            return ADBError.commandFailed(InstallOutput.details(for: message, removedExistingApp: removedExistingApp))
+        }
+        guard removedExistingApp, !message.contains("already removed") else { return error }
+        return ADBError.commandFailed("\(message)\n\nThe previous app and its local data were already removed.")
     }
 
     private func packages(on device: AndroidDevice, system: Bool) async throws -> [DeviceApp] {

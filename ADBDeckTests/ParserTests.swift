@@ -127,4 +127,15 @@ final class ParserTests: XCTestCase {
         XCTAssertFalse(APKManifest.validPackageName("bad; command"))
     }
 
+    func testInstallOutputRequiresExactSuccessAndExplainsFailures() throws {
+        XCTAssertNoThrow(try InstallOutput.requireSuccess("Performing Streamed Install\nSuccess"))
+        XCTAssertThrowsError(try InstallOutput.requireSuccess("Failure [INSTALL_FAILED_INSUFFICIENT_STORAGE]", removedExistingApp: true)) { error in
+            let message = error.localizedDescription
+            XCTAssertTrue(message.contains("enough free storage"))
+            XCTAssertTrue(message.contains("already removed"))
+            XCTAssertTrue(message.contains("INSTALL_FAILED_INSUFFICIENT_STORAGE"))
+        }
+        XCTAssertThrowsError(try InstallOutput.requireSuccess("Not successful"))
+    }
+
 }

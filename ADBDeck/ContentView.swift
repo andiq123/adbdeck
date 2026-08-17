@@ -30,6 +30,8 @@ struct ContentView: View {
     @State private var manualAddress = ""
     @State private var showOtherDevices = false
     @State private var showOptimizeConfirmation = false
+    @State private var showRemoteInput = false
+    @State private var remoteText = ""
 
     private var androidDevices: [AndroidDevice] { manager.devices.filter { $0.isAndroidLikely } }
     private var otherDevices: [AndroidDevice] { manager.devices.filter { !$0.isAndroidLikely } }
@@ -165,6 +167,9 @@ struct ContentView: View {
         .sheet(isPresented: $showAddDevice) {
             addDeviceSheet
         }
+        .sheet(isPresented: $showRemoteInput) {
+            remoteInputSheet
+        }
     }
 
     private var optimizationAlertContent: some View {
@@ -173,7 +178,7 @@ struct ContentView: View {
             Button("Cancel", role: .cancel) {}
             Button("Optimize") { Task { await manager.optimizeDevice() } }
         } message: {
-            Text("This asks Android to close cached background apps and remove temporary app caches. Installed apps and personal data are kept; apps may open more slowly once while caches rebuild.")
+            Text("This asks Android to close cached background apps. Temporary caches are trimmed only when storage is low. Installed apps and personal data are kept.")
         }
         .alert("Optimization complete", isPresented: Binding(get: { manager.optimizationResult != nil }, set: { if !$0 { manager.optimizationResult = nil } }), presenting: manager.optimizationResult) { _ in
             Button("Done") { manager.optimizationResult = nil }
@@ -226,6 +231,42 @@ struct ContentView: View {
             }
             .padding(24)
             .frame(width: 390)
+    }
+
+    private var remoteInputSheet: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Label("Type on \(manager.selectedDevice?.name ?? "device")", systemImage: "keyboard")
+                .font(.title2.bold())
+            Text("Focus a text field on the TV, then type or paste here.")
+                .foregroundStyle(.secondary)
+            TextField("Text to send", text: $remoteText, axis: .vertical)
+                .textFieldStyle(.roundedBorder)
+                .lineLimit(1...4)
+                .onSubmit { sendRemoteText() }
+            HStack(spacing: 10) {
+                Button("Paste", systemImage: "doc.on.clipboard") {
+                    remoteText = NSPasteboard.general.string(forType: .string) ?? ""
+                }
+                Spacer()
+                remoteKey("Back", symbol: "chevron.backward", code: "KEYCODE_BACK")
+                remoteKey("Home", symbol: "house", code: "KEYCODE_HOME")
+                remoteKey("Delete", symbol: "delete.left", code: "KEYCODE_DEL")
+                remoteKey("Enter", symbol: "return", code: "KEYCODE_ENTER")
+            }
+            HStack {
+                Text("Standard keyboard characters · 500 maximum")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Done") { showRemoteInput = false }
+                Button("Send") { sendRemoteText() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(remoteText.isEmpty || manager.isWorking)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 520)
     }
 
     private var sidebar: some View {
@@ -362,6 +403,9 @@ struct ContentView: View {
                 }
                 Button { showOptimizeConfirmation = true } label: { Label("Optimize", systemImage: "wand.and.stars") }
                     .help("Close cached background apps and clear temporary caches")
+                    .disabled(!device.adbState.isUsable || manager.isWorking)
+                Button { showRemoteInput = true } label: { Label("Type on device", systemImage: "keyboard") }
+                    .help("Send Mac text and remote keys to the focused field")
                     .disabled(!device.adbState.isUsable || manager.isWorking)
                 Button { Task { await reloadDetail() } } label: { Label("Reload", systemImage: "arrow.clockwise") }
                     .disabled(!device.adbState.isUsable || manager.isWorking)
@@ -524,6 +568,23 @@ struct ContentView: View {
         manualAddress = ""
         showAddDevice = false
         Task { await manager.addDevice(address) }
+    }
+
+    private func sendRemoteText() {
+        let text = remoteText
+        Task {
+            await manager.sendText(text)
+            if manager.lastError == nil { remoteText = "" }
+        }
+    }
+
+    private func remoteKey(_ name: String, symbol: String, code: String) -> some View {
+        Button { Task { await manager.sendKey(code, named: name) } } label: {
+            Label(name, systemImage: symbol)
+        }
+        .labelStyle(.iconOnly)
+        .help(name)
+        .disabled(manager.isWorking)
     }
 
     private func reloadDetail() async {

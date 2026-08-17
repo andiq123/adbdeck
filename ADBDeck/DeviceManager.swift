@@ -418,6 +418,33 @@ enum RemoteFiles {
     }
 }
 
+enum RemoteInput {
+    static func command(for text: String) throws -> String {
+        guard !text.isEmpty else { throw ADBError.commandFailed("Enter or paste text to send.") }
+        guard text.count <= 500 else { throw ADBError.commandFailed("Text input is limited to 500 characters at a time.") }
+        guard text.unicodeScalars.allSatisfy({ $0 == "\n" || (0x20...0x7e).contains($0.value) }) else {
+            throw ADBError.commandFailed("ADB text input supports standard keyboard characters only. Remove emoji, accents, or tabs and try again.")
+        }
+
+        var commands: [String] = []
+        var chunk = ""
+        func flush() {
+            guard !chunk.isEmpty else { return }
+            commands.append("input text \(RemoteFiles.shellQuote(chunk))")
+            chunk = ""
+        }
+        for character in text {
+            switch character {
+            case " ": flush(); commands.append("input keyevent KEYCODE_SPACE")
+            case "\n": flush(); commands.append("input keyevent KEYCODE_ENTER")
+            default: chunk.append(character)
+            }
+        }
+        flush()
+        return commands.joined(separator: "; ")
+    }
+}
+
 struct RemoteClipboard: Equatable, Sendable {
     enum Operation: String, Sendable { case copy = "Copy", move = "Move" }
     let file: RemoteFile
@@ -1118,9 +1145,15 @@ final class DeviceManager {
         let ownsActivity = beginActivity("Optimizing \(device.name)", detail: "Closing cached background apps", fraction: 0.15)
         do {
             _ = try await adb.run(["-s", device.serial, "shell", "am kill-all"])
-            transfer?.detail = "Clearing temporary app caches"
-            transfer?.fraction = 0.5
-            _ = try await adb.run(["-s", device.serial, "shell", "pm trim-caches 999G"])
+            if let storage, storage.isLow {
+                transfer?.detail = "Reclaiming temporary cache space"
+                transfer?.fraction = 0.5
+                let targetFreeBytes = max(storage.total / 5, storage.free)
+                _ = try await adb.run(["-s", device.serial, "shell", "pm trim-caches \(targetFreeBytes)"])
+            } else {
+                transfer?.detail = "Storage is healthy; temporary caches kept"
+                transfer?.fraction = 0.65
+            }
             transfer?.detail = "Refreshing storage and memory"
             transfer?.fraction = 0.85
             endActivity(ownsActivity)
@@ -1137,6 +1170,37 @@ final class DeviceManager {
         } catch {
             endActivity(ownsActivity)
             report(error, operation: "Optimize \(device.name)")
+        }
+    }
+
+    func sendText(_ text: String) async {
+        guard let device = selectedDevice, device.adbState.isUsable else {
+            report(ADBError.commandFailed("Select and connect an authorized ADB device before sending text."), operation: "Send text")
+            return
+        }
+        do {
+            let command = try RemoteInput.command(for: text)
+            let ownsActivity = beginActivity("Sending text", detail: "To the focused field on \(device.name)")
+            defer { endActivity(ownsActivity) }
+            _ = try await adb.run(["-s", device.serial, "shell", command])
+            statusMessage = "Sent text to \(device.name)"
+        } catch {
+            report(error, operation: "Send text to \(device.name)")
+        }
+    }
+
+    func sendKey(_ keyCode: String, named name: String) async {
+        guard let device = selectedDevice, device.adbState.isUsable else {
+            report(ADBError.commandFailed("Select and connect an authorized ADB device before sending a key."), operation: "Send \(name)")
+            return
+        }
+        let ownsActivity = beginActivity("Sending \(name)", detail: device.name)
+        defer { endActivity(ownsActivity) }
+        do {
+            _ = try await adb.run(["-s", device.serial, "shell", "input keyevent \(keyCode)"])
+            statusMessage = "Sent \(name) to \(device.name)"
+        } catch {
+            report(error, operation: "Send \(name) to \(device.name)")
         }
     }
 

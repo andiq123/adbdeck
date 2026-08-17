@@ -166,4 +166,11 @@ final class ParserTests: XCTestCase {
         XCTAssertEqual(unchanged.memoryReleased, 0)
     }
 
+    func testRemoteInputBuildsSafeKeyboardCommands() throws {
+        XCTAssertEqual(try RemoteInput.command(for: "Hello TV\n100%"), "input text 'Hello'; input keyevent KEYCODE_SPACE; input text 'TV'; input keyevent KEYCODE_ENTER; input text '100%'")
+        XCTAssertEqual(try RemoteInput.command(for: "Andi's"), "input text 'Andi'\\''s'")
+        XCTAssertThrowsError(try RemoteInput.command(for: "📺"))
+        XCTAssertThrowsError(try RemoteInput.command(for: String(repeating: "a", count: 501)))
+    }
+
 }

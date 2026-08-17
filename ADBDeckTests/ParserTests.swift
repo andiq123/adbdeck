@@ -116,6 +116,15 @@ final class ParserTests: XCTestCase {
         let manifest = AppBackup.Manifest(formatVersion: 1, packageName: "com.example.app", displayName: "Example", files: ["base.apk", "split_config.en.apk"])
         XCTAssertEqual(try AppBackup.apkURLs(for: manifest, in: directory).map(\.lastPathComponent), manifest.files)
         XCTAssertThrowsError(try AppBackup.apkURLs(for: .init(formatVersion: 1, packageName: "com.example.app", displayName: "Example", files: ["../base.apk"]), in: directory))
+        XCTAssertThrowsError(try AppBackup.apkURLs(for: .init(formatVersion: 1, packageName: "bad; rm -rf", displayName: "Example", files: ["base.apk"]), in: directory))
         XCTAssertEqual(AppBackup.safeName("TV/App: Demo"), "TV-App- Demo")
     }
+
+    func testAPKManifestPackageValidation() throws {
+        let manifest = Data(base64Encoded: "AwAIAJQAAAABABwAVAAAAAMAAAAAAAAAAAEAACgAAAAAAAAAAAAAAAsAAAAVAAAACAhtYW5pZmVzdAAHB3BhY2thZ2UAEhJjb20uZXhhbXBsZS5wbGF5ZXIAAAACARAAOAAAAAEAAAD//////////wAAAAAUABQAAQAAAAAAAAD/////AQAAAAIAAAAIAAADAgAAAA==")!
+        XCTAssertEqual(try APKManifest.packageName(in: manifest), "com.example.player")
+        XCTAssertThrowsError(try APKManifest.packageName(in: manifest.prefix(24)))
+        XCTAssertFalse(APKManifest.validPackageName("bad; command"))
+    }
+
 }

@@ -83,6 +83,15 @@ struct ContentView: View {
             guard case .success(let url) = result else { return }
             Task { await manager.install(url) }
         }
+        .alert("Replace installed app?", isPresented: Binding(get: { manager.pendingReplacement != nil }, set: { if !$0 { manager.pendingReplacement = nil } }), presenting: manager.pendingReplacement) { request in
+            Button("Cancel", role: .cancel) { manager.pendingReplacement = nil }
+            Button("Replace", role: .destructive) {
+                manager.pendingReplacement = nil
+                Task { await manager.install(request.url, replacing: true) }
+            }
+        } message: { request in
+            Text("\(request.packageName) is already installed on \(manager.selectedDevice?.name ?? "this device"). Replace removes the existing app and all of its data first. If the new installation fails, the old app cannot be restored.")
+        }
         .alert("Remove app?", isPresented: Binding(get: { appToRemove != nil }, set: { if !$0 { appToRemove = nil } }), presenting: appToRemove) { app in
             Button("Cancel", role: .cancel) { appToRemove = nil }
             Button("Remove", role: .destructive) {

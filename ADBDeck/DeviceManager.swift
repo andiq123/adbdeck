@@ -402,6 +402,105 @@ struct OperationFailure: Identifiable, Equatable {
     let details: String
 }
 
+struct InstallRequest: Identifiable, Equatable {
+    let id = UUID()
+    let url: URL
+    let packageName: String
+}
+
+enum APKManifest {
+    static func packageName(in data: Data) throws -> String {
+        guard data.u16(at: 0) == 0x0003 else { throw invalid }
+        var offset = Int(data.u16(at: 2) ?? 8)
+        var strings: [String] = []
+        while offset + 8 <= data.count {
+            guard let type = data.u16(at: offset), let headerSize = data.u16(at: offset + 2),
+                  let chunkSize = data.u32(at: offset + 4), headerSize >= 8, chunkSize >= UInt32(headerSize),
+                  offset + Int(chunkSize) <= data.count else { throw invalid }
+            if type == 0x0001 { strings = try stringPool(in: data, at: offset) }
+            if type == 0x0102, !strings.isEmpty, data.string(at: offset + 20, from: strings) == "manifest",
+               let attributeStart = data.u16(at: offset + 24), let attributeSize = data.u16(at: offset + 26),
+               let attributeCount = data.u16(at: offset + 28), attributeSize >= 20 {
+                let start = offset + 16 + Int(attributeStart)
+                for index in 0..<Int(attributeCount) {
+                    let attribute = start + index * Int(attributeSize)
+                    guard attribute + 20 <= offset + Int(chunkSize) else { throw invalid }
+                    guard data.string(at: attribute + 4, from: strings) == "package" else { continue }
+                    let raw = data.string(at: attribute + 8, from: strings)
+                    let typed = data[attribute + 15] == 0x03 ? data.string(at: attribute + 16, from: strings) : nil
+                    guard let package = raw ?? typed, validPackageName(package) else { throw invalid }
+                    return package
+                }
+            }
+            offset += Int(chunkSize)
+        }
+        throw invalid
+    }
+
+    private static func stringPool(in data: Data, at offset: Int) throws -> [String] {
+        guard let headerSize = data.u16(at: offset + 2), let count = data.u32(at: offset + 8),
+              let flags = data.u32(at: offset + 16), let stringsStart = data.u32(at: offset + 20), headerSize >= 28 else { throw invalid }
+        let offsets = offset + Int(headerSize)
+        let base = offset + Int(stringsStart)
+        return try (0..<Int(count)).map { index in
+            guard let relative = data.u32(at: offsets + index * 4) else { throw invalid }
+            var cursor = base + Int(relative)
+            if flags & 0x100 != 0 {
+                _ = try data.length8(at: &cursor)
+                let length = try data.length8(at: &cursor)
+                guard cursor + length <= data.count, let value = String(data: data[cursor..<cursor + length], encoding: .utf8) else { throw invalid }
+                return value
+            }
+            let length = try data.length16(at: &cursor)
+            guard cursor + length * 2 <= data.count,
+                  let value = String(data: data[cursor..<cursor + length * 2], encoding: .utf16LittleEndian) else { throw invalid }
+            return value
+        }
+    }
+
+    static func validPackageName(_ value: String) -> Bool {
+        let parts = value.split(separator: ".", omittingEmptySubsequences: false)
+        return parts.count > 1 && parts.allSatisfy { !$0.isEmpty && $0.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" } }
+    }
+
+    private static var invalid: ADBError { .commandFailed("The APK has an invalid or unreadable Android manifest.") }
+}
+
+private extension Data {
+    func u16(at offset: Int) -> UInt16? {
+        guard offset >= 0, offset + 2 <= count else { return nil }
+        return UInt16(self[offset]) | UInt16(self[offset + 1]) << 8
+    }
+
+    func u32(at offset: Int) -> UInt32? {
+        guard offset >= 0, offset + 4 <= count else { return nil }
+        return UInt32(self[offset]) | UInt32(self[offset + 1]) << 8 | UInt32(self[offset + 2]) << 16 | UInt32(self[offset + 3]) << 24
+    }
+
+    func string(at offset: Int, from pool: [String]) -> String? {
+        guard let index = u32(at: offset), index != UInt32.max, Int(index) < pool.count else { return nil }
+        return pool[Int(index)]
+    }
+
+    func length8(at cursor: inout Int) throws -> Int {
+        guard cursor < count else { throw ADBError.commandFailed("The APK manifest string table is truncated.") }
+        let first = Int(self[cursor]); cursor += 1
+        guard first & 0x80 != 0 else { return first }
+        guard cursor < count else { throw ADBError.commandFailed("The APK manifest string table is truncated.") }
+        let value = (first & 0x7f) << 8 | Int(self[cursor]); cursor += 1
+        return value
+    }
+
+    func length16(at cursor: inout Int) throws -> Int {
+        guard let first = u16(at: cursor) else { throw ADBError.commandFailed("The APK manifest string table is truncated.") }
+        cursor += 2
+        guard first & 0x8000 != 0 else { return Int(first) }
+        guard let second = u16(at: cursor) else { throw ADBError.commandFailed("The APK manifest string table is truncated.") }
+        cursor += 2
+        return Int(first & 0x7fff) << 16 | Int(second)
+    }
+}
+
 enum AppBackup {
     struct Manifest: Codable, Equatable {
         let formatVersion: Int
@@ -418,7 +517,7 @@ enum AppBackup {
     }
 
     static func apkURLs(for manifest: Manifest, in directory: URL) throws -> [URL] {
-        guard manifest.formatVersion == 1, !manifest.packageName.isEmpty, !manifest.files.isEmpty,
+        guard manifest.formatVersion == 1, APKManifest.validPackageName(manifest.packageName), !manifest.files.isEmpty,
               Set(manifest.files).count == manifest.files.count else {
             throw ADBError.commandFailed("This ADB Deck app package has an invalid manifest.")
         }
@@ -740,6 +839,7 @@ final class DeviceManager {
     var currentPath = "/sdcard"
     var fileClipboard: RemoteClipboard?
     var lastError: OperationFailure?
+    var pendingReplacement: InstallRequest?
     var storage: DeviceStorage?
     var performance: DevicePerformance?
     var performanceError: String?
@@ -901,7 +1001,7 @@ final class DeviceManager {
         }
     }
 
-    func install(_ url: URL) async {
+    func install(_ url: URL, replacing: Bool = false) async {
         guard let device = selectedDevice, device.adbState.isUsable else { return }
         let fileExtension = url.pathExtension.lowercased()
         guard ["apk", "adbdeck"].contains(fileExtension),
@@ -910,6 +1010,28 @@ final class DeviceManager {
             statusMessage = "Choose an APK or ADB Deck app package"
             return
         }
+        let ownsActivity = beginActivity("Checking \(url.lastPathComponent)", detail: "Validating package on \(device.name)")
+        do {
+            let packageName = try await packageName(in: url)
+            let output = try await adb.run(["-s", device.serial, "shell", "pm", "list", "packages", packageName])
+            let installed = output.split(separator: "\n").contains("package:\(packageName)")
+            if installed && !replacing {
+                endActivity(ownsActivity)
+                pendingReplacement = InstallRequest(url: url, packageName: packageName)
+                return
+            }
+            if installed {
+                transfer = TransferStatus(title: "Replacing \(packageName)", detail: "Removing the installed app and its data", fraction: nil)
+                let uninstall = try await adb.run(["-s", device.serial, "uninstall", packageName])
+                guard uninstall.localizedCaseInsensitiveContains("success") else { throw ADBError.commandFailed(uninstall) }
+                withAnimation(.smooth) { apps.removeAll { $0.packageName == packageName } }
+            }
+        } catch {
+            endActivity(ownsActivity)
+            report(error, operation: "Validate \(url.lastPathComponent)")
+            return
+        }
+        endActivity(ownsActivity)
         if fileExtension == "adbdeck" {
             await installBackup(url, on: device)
             return
@@ -935,6 +1057,42 @@ final class DeviceManager {
         try? await Task.sleep(for: .milliseconds(450))
         transfer = nil
         isWorking = false
+    }
+
+    private func packageName(in archive: URL) async throws -> String {
+        if archive.pathExtension.lowercased() == "adbdeck" {
+            let data = try await archiveEntry(AppBackup.manifestName, in: archive)
+            let package = try JSONDecoder().decode(AppBackup.Manifest.self, from: data).packageName
+            guard APKManifest.validPackageName(package) else { throw ADBError.commandFailed("The ADB Deck package has an invalid application ID.") }
+            return package
+        }
+        return try APKManifest.packageName(in: await archiveEntry("AndroidManifest.xml", in: archive))
+    }
+
+    private func archiveEntry(_ entry: String, in archive: URL) async throws -> Data {
+        try await Task.detached(priority: .userInitiated) {
+            let process = Process()
+            let stdout = Pipe()
+            let stderr = Pipe()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+            process.arguments = ["-p", archive.path, entry]
+            process.standardOutput = stdout
+            process.standardError = stderr
+            try process.run()
+            let limit = 8 * 1024 * 1024
+            let data = try stdout.fileHandleForReading.read(upToCount: limit + 1) ?? Data()
+            if data.count > limit {
+                process.terminate()
+                process.waitUntilExit()
+                throw ADBError.commandFailed("The app package manifest is unexpectedly large.")
+            }
+            process.waitUntilExit()
+            guard process.terminationStatus == 0, !data.isEmpty else {
+                let message = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                throw ADBError.commandFailed(message.nilIfEmpty ?? "The app package does not contain \(entry).")
+            }
+            return data
+        }.value
     }
 
     func download(_ app: DeviceApp, to directory: URL) async -> URL? {

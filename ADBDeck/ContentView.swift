@@ -383,6 +383,7 @@ struct ContentView: View {
                 List(filteredFiles) { file in
                     RemoteFileRow(
                         file: file,
+                        isMeasuringFolderSize: manager.isLoadingFolderSizes,
                         open: { if file.isDirectory { Task { await manager.loadFiles(at: file.path) } } else { chooseDownloadFolder(for: file) } },
                         download: { chooseDownloadFolder(for: file) },
                         copy: { manager.putOnClipboard(file, operation: .copy) },
@@ -749,6 +750,7 @@ private struct DiscoveryLoadingView: View {
 
 private struct RemoteFileRow: View {
     let file: RemoteFile
+    let isMeasuringFolderSize: Bool
     let open: () -> Void
     let download: () -> Void
     let copy: () -> Void
@@ -767,7 +769,13 @@ private struct RemoteFileRow: View {
                 HStack(spacing: 12) {
                     Text(file.permissions)
                     Text(file.modified)
-                    if !file.isDirectory { Text(ByteCountFormatter.string(fromByteCount: file.size, countStyle: .file)) }
+                    if let size = file.isDirectory ? file.measuredSize : file.size {
+                        Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
+                            .contentTransition(.numericText())
+                    } else if isMeasuringFolderSize {
+                        ProgressView().controlSize(.mini)
+                        Text("Calculating…")
+                    }
                 }
                 .font(.caption.monospaced())
                 .foregroundStyle(.secondary)

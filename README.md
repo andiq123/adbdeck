@@ -16,11 +16,16 @@
 
 ADB Deck discovers ADB-enabled TVs, streaming boxes, phones, tablets, and car head units. It identifies familiar hardware, keeps active devices easy to reach, and turns wireless ADB into a focused Mac experience.
 
-- 📺 Discover and identify devices across the local network
-- 📦 Browse, install, launch, export, and remove apps
-- 📁 Upload, download, organize, and clean device files
-- 📊 See storage, app size, CPU, and memory at a glance
-- ⚡ Follow live progress and clear, actionable errors
+<table>
+  <tr>
+    <td width="50%"><img src="docs/icons/discover.svg" width="22" alt=""> <strong>Automatic discovery</strong><br><sub>Find and identify ADB devices across the local network.</sub></td>
+    <td width="50%"><img src="docs/icons/apps.svg" width="22" alt=""> <strong>App control</strong><br><sub>Install, launch, export, and remove Android apps.</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/icons/files.svg" width="22" alt=""> <strong>File management</strong><br><sub>Browse, size, transfer, organize, and clean device files.</sub></td>
+    <td><img src="docs/icons/activity.svg" width="22" alt=""> <strong>Device health</strong><br><sub>Monitor storage, app usage, CPU, and memory.</sub></td>
+  </tr>
+</table>
 
 ## Use it
 

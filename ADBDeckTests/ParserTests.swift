@@ -48,6 +48,10 @@ final class ParserTests: XCTestCase {
         XCTAssertTrue(RemoteFiles.protectedRoots.contains("/system"))
         XCTAssertFalse(RemoteFiles.validName("../bad"))
         XCTAssertEqual(RemoteFiles.shellQuote("Andi's TV"), "'Andi'\\''s TV'")
+        XCTAssertEqual(RemoteFiles.directorySizes("12\t/sdcard/My Folder\n2048 /sdcard/Movies"), [
+            "/sdcard/My Folder": 12_288,
+            "/sdcard/Movies": 2_097_152
+        ])
     }
 
     func testStorageAndPerAppSizeParsing() {

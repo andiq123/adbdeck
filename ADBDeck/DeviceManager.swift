@@ -306,6 +306,7 @@ struct RemoteFile: Identifiable, Hashable, Sendable {
     let permissions: String
     let isDirectory: Bool
     let isLink: Bool
+    var measuredSize: Int64? = nil
 
     var id: String { path }
     var symbol: String {
@@ -363,6 +364,14 @@ enum RemoteFiles {
             if $0.isDirectory != $1.isDirectory { return $0.isDirectory }
             return $0.name.localizedStandardCompare($1.name) == .orderedAscending
         }
+    }
+
+    static func directorySizes(_ output: String) -> [String: Int64] {
+        Dictionary(uniqueKeysWithValues: output.split(separator: "\n").compactMap { line in
+            let fields = line.split(maxSplits: 1, whereSeparator: \.isWhitespace)
+            guard fields.count == 2, let kilobytes = Int64(fields[0]) else { return nil }
+            return (String(fields[1]), kilobytes * 1024)
+        })
     }
 }
 
@@ -690,9 +699,11 @@ final class DeviceManager {
     var storage: DeviceStorage?
     var performance: DevicePerformance?
     var performanceError: String?
+    var isLoadingFolderSizes = false
 
     private let adb = ADBClient()
     private var previousCPU: [String: CPUTicks] = [:]
+    private var folderSizeRequestID = UUID()
 
     var selectedDevice: AndroidDevice? { devices.first { $0.id == selection } }
 
@@ -909,6 +920,8 @@ final class DeviceManager {
         guard target.hasPrefix("/"), !target.contains("\n") else { statusMessage = "Invalid device path"; return }
         currentPath = target
         files = []
+        folderSizeRequestID = UUID()
+        isLoadingFolderSizes = false
         isWorking = true
         defer { isWorking = false }
         do {
@@ -916,7 +929,34 @@ final class DeviceManager {
             guard selectedDevice?.id == device.id, currentPath == target else { return }
             withAnimation(.smooth) { files = RemoteFiles.parse(output, in: target) }
             statusMessage = "Loaded \(files.count) item\(files.count == 1 ? "" : "s")"
+            let folders = files.filter { $0.isDirectory }.map(\.path)
+            if !folders.isEmpty {
+                let requestID = UUID()
+                folderSizeRequestID = requestID
+                Task { await loadFolderSizes(folders, for: device, at: target, requestID: requestID) }
+            }
         } catch { report(error, operation: "Browse \(target)") }
+    }
+
+    private func loadFolderSizes(_ folders: [String], for device: AndroidDevice, at path: String, requestID: UUID) async {
+        guard folderSizeRequestID == requestID else { return }
+        isLoadingFolderSizes = true
+        defer {
+            if folderSizeRequestID == requestID { isLoadingFolderSizes = false }
+        }
+        let arguments = folders.map(RemoteFiles.shellQuote).joined(separator: " ")
+        guard let output = try? await adb.run(["-s", device.serial, "shell", "du -sk \(arguments) 2>/dev/null; true"]),
+              folderSizeRequestID == requestID,
+              selectedDevice?.id == device.id,
+              currentPath == path else { return }
+        let sizes = RemoteFiles.directorySizes(output)
+        withAnimation(.smooth) {
+            files = files.map { file in
+                var updated = file
+                updated.measuredSize = sizes[file.path]
+                return updated
+            }
+        }
     }
 
     func createFolder(named name: String) async {

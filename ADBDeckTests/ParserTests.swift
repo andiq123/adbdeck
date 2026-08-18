@@ -35,6 +35,15 @@ final class ParserTests: XCTestCase {
         XCTAssertEqual(NetworkDiscovery.normalizedCastModel("onn. 4K Plus Streami"), "onn. 4K Plus Streaming")
     }
 
+    func testDeviceTypeEstimationUsesStrongestAvailableSignal() {
+        let car = AndroidDevice(id: "1", name: "Android", manufacturer: "Unknown", model: "Radio", adbState: .connected, isAndroidLikely: true, hasCast: false, androidCharacteristics: "automotive")
+        let router = AndroidDevice(id: "2", name: "Device", manufacturer: "Unknown", model: "Unknown", adbState: .disabled, isAndroidLikely: false, hasCast: false, isGateway: true)
+        let pi = AndroidDevice(id: "3", name: "Device", manufacturer: "Unknown", model: "Unknown", macAddress: "b8:27:eb:00:00:01", adbState: .disabled, isAndroidLikely: false, hasCast: false)
+        let printer = AndroidDevice(id: "4", name: "Device", manufacturer: "Unknown", model: "Unknown", adbState: .disabled, isAndroidLikely: false, hasCast: false, openPorts: [9100])
+        XCTAssertEqual([car.typeLabel, router.typeLabel, pi.typeLabel, printer.typeLabel], ["Android Automotive", "Likely Router", "Likely Raspberry Pi", "Likely Printer"])
+        XCTAssertEqual(NetworkDiscovery.parseDefaultGateway("   gateway: 192.168.1.1\ninterface: en0"), "192.168.1.1")
+    }
+
     func testRemoteFileParserPreservesNamesAndProtectsRoots() {
         let output = """
         total 12

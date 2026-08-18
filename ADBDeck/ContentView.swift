@@ -900,7 +900,7 @@ private struct DeviceRow: View {
         HStack(spacing: 12) {
             Image(systemName: device.symbol)
                 .font(.title3)
-                .foregroundStyle(device.isAndroidLikely ? Color.accentColor : .secondary)
+                .foregroundStyle(device.kindColor)
                 .frame(width: 28)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
@@ -908,10 +908,11 @@ private struct DeviceRow: View {
                     if let label = device.typeLabel {
                         Text(label)
                             .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(device.kindColor)
                             .lineLimit(1)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
-                            .background(.quaternary, in: Capsule())
+                            .background(device.kindColor.opacity(0.16), in: Capsule())
                     }
                 }
                 Text(device.id).font(.caption.monospaced()).foregroundStyle(.secondary)

@@ -80,6 +80,46 @@ enum ADBState: String, Codable, Sendable {
     var isUsable: Bool { self == .connected }
 }
 
+enum DeviceKind: Sendable {
+    case fireTV, television, phone, tablet, automotive, watch, androidDevice, cast
+    case router, raspberryPi, printer, camera, computer, network
+
+    var symbol: String {
+        switch self {
+        case .fireTV: "flame.fill"
+        case .television, .cast: "tv.fill"
+        case .phone: "iphone"
+        case .tablet: "ipad"
+        case .automotive: "car.fill"
+        case .watch: "clock.fill"
+        case .androidDevice: "display"
+        case .router: "wifi.router.fill"
+        case .raspberryPi, .computer: "desktopcomputer"
+        case .printer: "printer.fill"
+        case .camera: "video.fill"
+        case .network: "network"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .fireTV: .orange
+        case .television, .cast: .blue
+        case .phone: .teal
+        case .tablet: .cyan
+        case .automotive: .orange
+        case .watch: .mint
+        case .androidDevice: .blue
+        case .router: .purple
+        case .raspberryPi: .pink
+        case .printer: .green
+        case .camera: .red
+        case .computer: .indigo
+        case .network: .secondary
+        }
+    }
+}
+
 struct AndroidDevice: Identifiable, Hashable, Sendable {
     let id: String
     var adbPort: UInt16 = 5555
@@ -93,6 +133,9 @@ struct AndroidDevice: Identifiable, Hashable, Sendable {
     var supportedABIs: String? = nil
     var androidVersion: String? = nil
     var apiLevel: String? = nil
+    var androidCharacteristics: String? = nil
+    var openPorts: Set<UInt16> = []
+    var isGateway = false
 
     var serial: String { "\(id):\(adbPort)" }
 
@@ -113,12 +156,27 @@ struct AndroidDevice: Identifiable, Hashable, Sendable {
         return values.joined(separator: " · ")
     }
 
-    var symbol: String {
+    var kind: DeviceKind {
         let text = "\(name) \(manufacturer) \(model)".lowercased()
-        if text.contains("fire") || text.contains("amazon") { return "flame.fill" }
-        if text.contains("tv") || text.contains("onn") || text.contains("xiaomi") || text.contains("mi ") { return "tv.fill" }
-        return isAndroidLikely ? "display" : "network"
+        let characteristics = androidCharacteristics?.lowercased() ?? ""
+        if text.contains("fire") || text.contains("amazon") || text.contains("aft") { return .fireTV }
+        if characteristics.contains("automotive") { return .automotive }
+        if characteristics.contains("watch") { return .watch }
+        if characteristics.contains("tablet") { return .tablet }
+        if characteristics.contains("phone") { return .phone }
+        if characteristics.contains("tv") || text.contains("tv") || text.contains("onn") || text.contains("xiaomi") || text.contains("mi ") { return .television }
+        if isAndroidLikely { return hasCast ? .television : .androidDevice }
+        if hasCast { return .cast }
+        if isGateway { return .router }
+        if Self.raspberryPiPrefixes.contains(where: { macAddress?.uppercased().hasPrefix($0) == true }) { return .raspberryPi }
+        if openPorts.contains(9100) || openPorts.contains(631) { return .printer }
+        if openPorts.contains(554) { return .camera }
+        if openPorts.contains(62078) || openPorts.contains(445) || openPorts.contains(22) { return .computer }
+        return .network
     }
+
+    var symbol: String { kind.symbol }
+    var kindColor: Color { kind.color }
 
     var typeLabel: String? {
         let text = "\(name) \(manufacturer) \(model)".lowercased()
@@ -138,10 +196,26 @@ struct AndroidDevice: Identifiable, Hashable, Sendable {
         if text.contains("samsung") { return "Samsung TV" }
         if text.contains("webos") || text.contains(" lg ") || manufacturer.lowercased() == "lg" { return "LG TV" }
         if text.contains("roku") { return "Roku" }
-        if isAndroidLikely { return hasCast ? "Android TV · Cast" : "Android TV" }
+        let characteristics = androidCharacteristics?.lowercased() ?? ""
+        if characteristics.contains("automotive") { return "Android Automotive" }
+        if characteristics.contains("watch") { return "Wear OS" }
+        if characteristics.contains("tablet") { return "Android Tablet" }
+        if characteristics.contains("phone") { return "Android Phone" }
+        if characteristics.contains("tv") { return hasCast ? "Android TV · Cast" : "Android TV" }
+        if isAndroidLikely { return hasCast ? "Android TV · Cast" : "Android Device" }
         if hasCast { return "Google Cast" }
-        return nil
+        return switch kind {
+        case .router: "Likely Router"
+        case .raspberryPi: "Likely Raspberry Pi"
+        case .printer: "Likely Printer"
+        case .camera: "Likely Camera / Streamer"
+        case .computer where openPorts.contains(62078): "Likely Apple Device"
+        case .computer: "Likely Computer / Server"
+        default: "Network Device"
+        }
     }
+
+    private static let raspberryPiPrefixes = ["B8:27:EB", "DC:A6:32", "E4:5F:01", "D8:3A:DD", "28:CD:C1", "2C:CF:67"]
 
     var supportsDownloadMode: Bool {
         "\(name) \(manufacturer) \(model)".localizedCaseInsensitiveContains("samsung")
@@ -957,6 +1031,8 @@ struct NetworkDiscovery {
         var castName: String?
         var castModel: String?
         var adbPort: UInt16?
+        var openPorts: Set<UInt16> = []
+        var isGateway = false
     }
 
     static func discover() async -> [Host] {
@@ -995,7 +1071,9 @@ struct NetworkDiscovery {
             }
         }
 
-        let arp = await arpTable()
+        async let arpTask = arpTable()
+        async let gatewayTask = defaultGateway()
+        let (arp, gateway) = await (arpTask, gatewayTask)
         for (ip, mac) in arp {
             if serviceHosts[ip] != nil {
                 serviceHosts[ip]?.mac = mac
@@ -1003,6 +1081,10 @@ struct NetworkDiscovery {
                 serviceHosts[ip] = Host(ip: ip, mac: mac)
             }
         }
+
+        let fingerprints = await fingerprint(Array(serviceHosts.keys))
+        for (ip, ports) in fingerprints { serviceHosts[ip]?.openPorts = ports }
+        if let gateway { serviceHosts[gateway]?.isGateway = true }
 
         let castModels = await castServiceModels()
         for ip in serviceHosts.values.filter({ $0.castOpen }).map(\.ip) {
@@ -1120,6 +1202,36 @@ struct NetworkDiscovery {
         }.value
     }
 
+    static func parseDefaultGateway(_ output: String) -> String? {
+        output.split(separator: "\n").lazy
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { $0.hasPrefix("gateway:") }?
+            .split(separator: ":", maxSplits: 1).last.map { String($0).trimmingCharacters(in: .whitespaces) }
+    }
+
+    static func defaultGateway() async -> String? {
+        await Task.detached {
+            let process = Process()
+            let pipe = Pipe()
+            process.executableURL = URL(fileURLWithPath: "/sbin/route")
+            process.arguments = ["-n", "get", "default"]
+            process.standardOutput = pipe
+            guard (try? process.run()) != nil else { return nil }
+            process.waitUntilExit()
+            return parseDefaultGateway(String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self))
+        }.value
+    }
+
+    static func fingerprint(_ ips: [String]) async -> [String: Set<UInt16>] {
+        let ports: [UInt16] = [22, 445, 554, 631, 9100, 62078]
+        return await withTaskGroup(of: (String, UInt16, Bool).self, returning: [String: Set<UInt16>].self) { group in
+            for ip in ips { for port in ports { group.addTask { (ip, port, await portOpen(ip: ip, port: port)) } } }
+            var result: [String: Set<UInt16>] = [:]
+            for await (ip, port, isOpen) in group where isOpen { result[ip, default: []].insert(port) }
+            return result
+        }
+    }
+
     static func parseARP(_ output: String) -> [String: String] {
         var result: [String: String] = [:]
         for line in output.split(separator: "\n") where !line.contains("incomplete") {
@@ -1204,7 +1316,9 @@ final class DeviceManager {
                 macAddress: host.mac,
                 adbState: host.adbOpen ? .available : .disabled,
                 isAndroidLikely: host.adbOpen || host.castOpen,
-                hasCast: host.castOpen
+                hasCast: host.castOpen,
+                openPorts: host.openPorts,
+                isGateway: host.isGateway
             )
             applyRememberedIdentity(to: &device)
             if host.adbOpen { await enrichWithADB(&device) }
@@ -1960,15 +2074,16 @@ final class DeviceManager {
             }
             device.adbState = .connected
             device.isAndroidLikely = true
-            let props = try await adb.run(["-s", serial, "shell", "printf '%s|%s|%s|%s|%s|%s' \"$(getprop ro.product.manufacturer)\" \"$(getprop ro.product.model)\" \"$(getprop ro.product.device)\" \"$(getprop ro.product.cpu.abilist)\" \"$(getprop ro.build.version.release)\" \"$(getprop ro.build.version.sdk)\""])
+            let props = try await adb.run(["-s", serial, "shell", "printf '%s|%s|%s|%s|%s|%s|%s' \"$(getprop ro.product.manufacturer)\" \"$(getprop ro.product.model)\" \"$(getprop ro.product.device)\" \"$(getprop ro.product.cpu.abilist)\" \"$(getprop ro.build.version.release)\" \"$(getprop ro.build.version.sdk)\" \"$(getprop ro.build.characteristics)\""])
             let parts = props.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
-            if parts.count == 6 {
+            if parts.count == 7 {
                 device.manufacturer = parts[0].isEmpty ? device.manufacturer : parts[0]
                 device.model = parts[1].isEmpty ? device.model : parts[1]
                 device.name = parts[1].isEmpty ? device.name : parts[1]
                 device.supportedABIs = parts[3].nilIfEmpty
                 device.androidVersion = parts[4].nilIfEmpty
                 device.apiLevel = parts[5].nilIfEmpty
+                device.androidCharacteristics = parts[6].nilIfEmpty
                 rememberIdentity(device)
             }
         } catch {
@@ -2074,6 +2189,7 @@ final class DeviceManager {
         if let manufacturer = identity["manufacturer"] { device.manufacturer = manufacturer }
         if let model = identity["model"] { device.model = model }
         if device.name.hasPrefix("Device "), let name = identity["name"] { device.name = name }
+        device.androidCharacteristics = identity["characteristics"] ?? device.androidCharacteristics
     }
 
     private func rememberIdentity(_ device: AndroidDevice) {
@@ -2081,7 +2197,8 @@ final class DeviceManager {
         UserDefaults.standard.set([
             "manufacturer": device.manufacturer,
             "model": device.model,
-            "name": device.name
+            "name": device.name,
+            "characteristics": device.androidCharacteristics ?? ""
         ], forKey: "ADBDeck.device.\(mac.lowercased())")
     }
 }

@@ -117,6 +117,7 @@ struct ContentView: View {
         .task { await manager.refresh() }
         .onChange(of: manager.selection) {
             manager.fileClipboard = nil
+            manager.storage = nil
             manager.performance = nil
             manager.performanceError = nil
             manager.powerState = .unknown
@@ -833,7 +834,7 @@ struct ContentView: View {
                 }
                 .help(manager.powerState.rawValue)
                 .disabled(!device.adbState.isUsable || manager.isWorking)
-                Button { Task { await reloadDetail() } } label: { Label("Reload", systemImage: "arrow.clockwise") }
+                Button { Task { await reloadDetail(refreshStorage: true) } } label: { Label("Reload", systemImage: "arrow.clockwise") }
                     .disabled(!device.adbState.isUsable || manager.isWorking)
             }
         }
@@ -1069,12 +1070,12 @@ struct ContentView: View {
         .disabled(manager.isWorking)
     }
 
-    private func reloadDetail() async {
+    private func reloadDetail(refreshStorage: Bool = false) async {
         if detailMode == .apps {
             await manager.loadApps()
         } else {
             await manager.loadFiles()
-            await manager.loadStorage()
+            if refreshStorage || manager.storage == nil { await manager.loadStorage() }
         }
     }
 

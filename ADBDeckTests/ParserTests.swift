@@ -58,6 +58,8 @@ final class ParserTests: XCTestCase {
         XCTAssertEqual(RemoteFiles.locationName(for: "/sdcard/Download/Movies"), "Downloads")
         XCTAssertEqual(RemoteFiles.locationName(for: "/data/local/tmp/build.apk"), "ADB temporary files")
         XCTAssertEqual(RemoteFiles.locationName(for: "/system"), "system")
+        XCTAssertTrue(RemoteFiles.shouldMeasureFolderSizes(in: "/sdcard/Download"))
+        XCTAssertFalse(RemoteFiles.shouldMeasureFolderSizes(in: "/"))
         XCTAssertTrue(RemoteFiles.protectedRoots.contains("/system"))
         XCTAssertFalse(RemoteFiles.validName("../bad"))
         XCTAssertEqual(RemoteFiles.shellQuote("Andi's TV"), "'Andi'\\''s TV'")

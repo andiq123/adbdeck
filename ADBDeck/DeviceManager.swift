@@ -778,6 +778,10 @@ enum RemoteFiles {
         return URL(fileURLWithPath: path).lastPathComponent.nilIfEmpty ?? "Device files"
     }
 
+    static func shouldMeasureFolderSizes(in path: String) -> Bool {
+        path == "/sdcard" || path.hasPrefix("/sdcard/")
+    }
+
     static func shellQuote(_ value: String) -> String {
         "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
@@ -2323,7 +2327,7 @@ final class DeviceManager {
             withAnimation(.smooth) { files = RemoteFiles.parse(output, in: target) }
             statusMessage = "Loaded \(files.count) item\(files.count == 1 ? "" : "s")"
             let folders = files.filter { $0.isDirectory }.map(\.path)
-            if !folders.isEmpty {
+            if !folders.isEmpty, RemoteFiles.shouldMeasureFolderSizes(in: target) {
                 let requestID = UUID()
                 folderSizeRequestID = requestID
                 Task { await loadFolderSizes(folders, for: device, at: target, requestID: requestID) }
@@ -2344,7 +2348,7 @@ final class DeviceManager {
             if folderSizeRequestID == requestID { isLoadingFolderSizes = false }
         }
         let arguments = folders.map(RemoteFiles.shellQuote).joined(separator: " ")
-        guard let output = try? await adb.run(["-s", device.serial, "shell", "du -sk \(arguments) 2>/dev/null; true"]),
+        guard let output = try? await adb.run(["-s", device.serial, "shell", "timeout 8 du -sk \(arguments) 2>/dev/null; true"]),
               folderSizeRequestID == requestID,
               selectedDevice?.id == device.id,
               currentPath == path else { return }
@@ -2534,7 +2538,8 @@ final class DeviceManager {
                 let package = RemoteFiles.shellQuote($0)
                 return "du -sk $(pm path \(package) | cut -d: -f2) 2>/dev/null | awk -v p=\(package) '{s+=$1} END {if(s) print p \"\\t\" s*1024}'"
             }
-            if let output = try? await adb.run(["-s", serial, "shell", commands.joined(separator: "; ")]) {
+            let boundedCommand = "timeout 8 sh -c \(RemoteFiles.shellQuote(commands.joined(separator: "; ")))"
+            if let output = try? await adb.run(["-s", serial, "shell", boundedCommand]) {
                 appStorage.merge(StorageParser.apkStorage(output)) { current, _ in current }
             }
         }

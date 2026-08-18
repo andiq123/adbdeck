@@ -19,7 +19,7 @@ ADB Deck discovers ADB-enabled TVs, streaming boxes, phones, tablets, and car he
 <table>
   <tr>
     <td width="50%"><img src="docs/icons/discover.svg" width="22" alt=""> <strong>Automatic discovery</strong><br><sub>Find and identify ADB devices across the local network.</sub></td>
-    <td width="50%"><img src="docs/icons/apps.svg" width="22" alt=""> <strong>App control</strong><br><sub>Install, launch, force quit, clone, and remove apps—including APKM packages—and manage Android or Fire TV launchers.</sub></td>
+    <td width="50%"><img src="docs/icons/apps.svg" width="22" alt=""> <strong>App control</strong><br><sub>Install, launch, force quit, clone, and remove apps—including APKM packages—and keep a chosen Fire TV launcher active without the Mac connected.</sub></td>
   </tr>
   <tr>
     <td><img src="docs/icons/files.svg" width="22" alt=""> <strong>File management</strong><br><sub>Browse, size, transfer, organize, and clean device files.</sub></td>

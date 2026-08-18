@@ -576,7 +576,7 @@ struct ContentView: View {
             Text("Choose the app Android opens when Home is pressed. Only installed apps that advertise the HOME role are shown.")
                 .foregroundStyle(.secondary)
             if manager.selectedDevice?.kind == .fireTV {
-                Label("Fire OS may lock its default Home. Force via Mac can redirect it while ADB Deck stays connected; Amazon system packages remain enabled.", systemImage: "exclamationmark.shield.fill")
+                Label("Persistent Home installs a small helper on Fire TV. It keeps working after this Mac disconnects and after Fire TV restarts; Amazon Home remains enabled for recovery.", systemImage: "exclamationmark.shield.fill")
                     .font(.callout)
                     .foregroundStyle(.orange)
                     .padding(12)
@@ -602,23 +602,27 @@ struct ContentView: View {
                                     Text(launcher.component).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1)
                                 }
                                 Spacer()
-                                if manager.launcherRedirect?.launcher == launcher {
-                                    Button("Stop forcing") { Task { await manager.disableFireTVLauncherRedirect() } }
-                                        .buttonStyle(.bordered)
-                                        .tint(.orange)
-                                } else if launcher.component == manager.currentLauncher {
-                                    Label("Default", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-                                } else if launcher.isFallback {
+                                if launcher.isFallback {
                                     Text("Recovery fallback").font(.caption).foregroundStyle(.secondary)
                                 } else {
                                     HStack(spacing: 8) {
-                                        Button("Use") { Task { await manager.setDefaultLauncher(launcher) } }
-                                            .buttonStyle(.borderedProminent)
-                                            .tint(.green)
+                                        if launcher.component == manager.currentLauncher {
+                                            Label("Default", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                                        } else {
+                                            Button("Use") { Task { await manager.setDefaultLauncher(launcher) } }
+                                                .buttonStyle(.borderedProminent)
+                                                .tint(.green)
+                                        }
                                         if manager.selectedDevice?.kind == .fireTV {
-                                            Button("Force via Mac") { pendingLauncherRedirect = launcher }
-                                                .buttonStyle(.bordered)
-                                                .tint(.orange)
+                                            Toggle("Persistent", isOn: Binding(
+                                                get: { manager.launcherRedirect?.launcher == launcher },
+                                                set: { enabled in
+                                                    if enabled { pendingLauncherRedirect = launcher }
+                                                    else { Task { await manager.disableFireTVLauncherRedirect() } }
+                                                }
+                                            ))
+                                            .toggleStyle(.switch)
+                                            .tint(.orange)
                                         }
                                     }
                                     .disabled(manager.isWorking)
@@ -631,25 +635,27 @@ struct ContentView: View {
                 }
                 .frame(maxHeight: 360)
             }
-            Text(manager.launcherRedirect == nil ? "You can always select the original launcher again from this list." : "ADB Deck is actively redirecting Home. Stop forcing before quitting the app.")
-                .font(.caption)
-                .foregroundStyle(manager.launcherRedirect == nil ? Color.secondary : .orange)
+            if manager.selectedDevice?.kind == .fireTV {
+                Text(manager.launcherRedirect == nil ? "Persistent Home is off." : "Persistent on Fire TV · This Mac can disconnect safely.")
+                    .font(.caption)
+                    .foregroundStyle(manager.launcherRedirect == nil ? Color.secondary : .orange)
+            }
         }
         .padding(24)
         .frame(width: 640)
         .frame(minHeight: 420)
         .task { await manager.loadLaunchers() }
-        .alert("Force launcher via this Mac?", isPresented: Binding(
+        .alert("Make this Fire TV Home persistent?", isPresented: Binding(
             get: { pendingLauncherRedirect != nil },
             set: { if !$0 { pendingLauncherRedirect = nil } }
         ), presenting: pendingLauncherRedirect) { launcher in
             Button("Cancel", role: .cancel) { pendingLauncherRedirect = nil }
-            Button("Force via Mac") {
+            Button("Enable persistently") {
                 pendingLauncherRedirect = nil
                 Task { await manager.enableFireTVLauncherRedirect(launcher) }
             }
         } message: { launcher in
-            Text("ADB Deck will redirect Fire TV Home to \(launcher.name) while this Mac, ADB Deck, and wireless ADB remain connected. Fire TV Home stays enabled for recovery.")
+            Text("ADB Deck will install and enable its small Home helper on this Fire TV. \(launcher.name) will remain active after the Mac disconnects and after restarts. You can reconnect later to disable it; Amazon Home is never removed.")
         }
     }
 

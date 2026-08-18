@@ -5,6 +5,7 @@ DerivedData/
 build/
 build-release/
 build-test/
+build-firetv-helper/
 xcuserdata/
 *.xcuserstate
 
@@ -16,3 +17,7 @@ xcuserdata/
 dist/
 *.dmg
 *.zip
+*.idsig
+
+# Local Android signing key
+FireTVHelper/debug.keystore

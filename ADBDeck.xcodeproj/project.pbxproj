@@ -11,6 +11,7 @@
 		9BC8AB8D51E855AF9837CDB8 /* ADBDeckApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACCB9439F0E5D8FA414F5E46 /* ADBDeckApp.swift */; };
 		9CA168288B78D6E8431D71B6 /* DeviceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5664B293EE2271FCD8BC8DBE /* DeviceManager.swift */; };
 		C0F4734BC35A111FFA22F1B8 /* platform-tools in Resources */ = {isa = PBXBuildFile; fileRef = DE62FFBA410C26536D1B047F /* platform-tools */; };
+		C1A5F1A12C5A4DB987EE2001 /* ADBDeckFireTVHelper.apk in Resources */ = {isa = PBXBuildFile; fileRef = C1A5F1A12C5A4DB987EE2002 /* ADBDeckFireTVHelper.apk */; };
 		D1E9A10DD0315150F9588631 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 910F1CEDE4182526BFA4DF4D /* Assets.xcassets */; };
 		F3AD823F4214624BF41BBFD7 /* ParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E7AA3ADBFA7CAA70322FA00 /* ParserTests.swift */; };
 /* End PBXBuildFile section */
@@ -35,6 +36,7 @@
 		910F1CEDE4182526BFA4DF4D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		ACCB9439F0E5D8FA414F5E46 /* ADBDeckApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ADBDeckApp.swift; sourceTree = "<group>"; };
 		DE62FFBA410C26536D1B047F /* platform-tools */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "platform-tools"; path = "ADBDeck/Resources/platform-tools"; sourceTree = SOURCE_ROOT; };
+		C1A5F1A12C5A4DB987EE2002 /* ADBDeckFireTVHelper.apk */ = {isa = PBXFileReference; lastKnownFileType = file; path = Resources/ADBDeckFireTVHelper.apk; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -52,6 +54,7 @@
 			isa = PBXGroup;
 			children = (
 				ACCB9439F0E5D8FA414F5E46 /* ADBDeckApp.swift */,
+				C1A5F1A12C5A4DB987EE2002 /* ADBDeckFireTVHelper.apk */,
 				910F1CEDE4182526BFA4DF4D /* Assets.xcassets */,
 				8419BF14054FB18426599454 /* ContentView.swift */,
 				5664B293EE2271FCD8BC8DBE /* DeviceManager.swift */,
@@ -155,6 +158,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				D1E9A10DD0315150F9588631 /* Assets.xcassets in Resources */,
+				C1A5F1A12C5A4DB987EE2001 /* ADBDeckFireTVHelper.apk in Resources */,
 				C0F4734BC35A111FFA22F1B8 /* platform-tools in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

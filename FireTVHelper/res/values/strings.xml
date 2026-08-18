@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_description">Redirects Fire TV Home to the launcher selected in ADB Deck.</string>
+</resources>

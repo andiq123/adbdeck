@@ -262,6 +262,14 @@ final class ParserTests: XCTestCase {
         XCTAssertFalse(LauncherCompatibility.requiresGooglePlayLicense("com.example.launcher.MainActivity"))
     }
 
+    func testFireTVHelperPreservesOtherAccessibilityServices() {
+        let existing = "com.example.reader/.Service:com.example.remote/.Service"
+        let enabled = FireTVHomeHelper.accessibilityServices(existing, enabling: true)
+        XCTAssertTrue(enabled.contains(existing))
+        XCTAssertTrue(enabled.contains(FireTVHomeHelper.service))
+        XCTAssertEqual(FireTVHomeHelper.accessibilityServices(enabled, enabling: false), existing)
+    }
+
     func testAppInspectionScreenMappingAndMediaParsing() {
         let inspection = AppInspectionParser.parse("""
           versionCode=2400 minSdk=17 targetSdk=34

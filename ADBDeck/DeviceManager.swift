@@ -574,6 +574,20 @@ enum LauncherCompatibility {
     }
 }
 
+enum FireTVHomeHelper {
+    static let packageName = "com.andi.adbdeck.helper"
+    static let service = "\(packageName)/.HomeRedirectService"
+    static let enabledSetting = "adbdeck_launcher_enabled"
+    static let componentSetting = "adbdeck_launcher_component"
+
+    static func accessibilityServices(_ current: String, enabling: Bool) -> String {
+        var services = current.trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: ":").map(String.init).filter { !$0.isEmpty && $0 != "null" && $0 != service }
+        if enabling { services.append(service) }
+        return services.joined(separator: ":")
+    }
+}
+
 enum LauncherParser {
     private static let pattern = try! NSRegularExpression(pattern: #"([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+/[A-Za-z0-9_.$]+)"#)
     private static let knownNames = [
@@ -1613,7 +1627,6 @@ final class DeviceManager {
     private let adb = ADBClient()
     private var previousCPU: [String: CPUTicks] = [:]
     private var folderSizeRequestID = UUID()
-    private var launcherRedirectTask: Task<Void, Never>?
     private var loadedAppsDeviceID: String?
     private var loadedSystemAppsSetting = false
 
@@ -2405,6 +2418,7 @@ final class DeviceManager {
                     return $0.name.localizedStandardCompare($1.name) == .orderedAscending
                 }
             currentLauncher = current
+            await loadFireTVLauncherRedirect(on: device)
             statusMessage = "Found \(launchers.filter { !$0.isFallback }.count) launcher\(launchers.filter { !$0.isFallback }.count == 1 ? "" : "s")"
         } catch { report(error, operation: "Detect launchers") }
     }
@@ -2439,7 +2453,7 @@ final class DeviceManager {
     func enableFireTVLauncherRedirect(_ launcher: DeviceLauncher) async {
         guard let device = selectedDevice, device.adbState.isUsable, device.kind == .fireTV,
               launchers.contains(launcher), !launcher.isFallback else { return }
-        let ownsActivity = beginActivity("Preparing Home redirect", detail: launcher.name, fraction: 0.15)
+        let ownsActivity = beginActivity("Enabling persistent Home", detail: launcher.name, fraction: 0.1)
         defer { endActivity(ownsActivity) }
         do {
             let packageDump = try await adb.run(["-s", device.serial, "shell", "dumpsys package \(RemoteFiles.shellQuote(launcher.packageName))"])
@@ -2449,57 +2463,72 @@ final class DeviceManager {
                     throw ADBError.commandFailed("\(launcher.name) requires Google Play licensing, but Fire OS has no Google Play licensing service. Forcing it as Home would leave the device on its license-error screen. Use a direct Fire TV-compatible launcher build instead.")
                 }
             }
-            transfer?.fraction = 0.4
-            _ = try? await adb.run(["-s", device.serial, "shell", "cmd role add-role-holder --user 0 android.app.role.HOME \(RemoteFiles.shellQuote(launcher.packageName)) 0"])
+            guard let helper = Bundle.main.url(forResource: "ADBDeckFireTVHelper", withExtension: "apk") else {
+                throw ADBError.commandFailed("The Fire TV Home helper is missing from this ADB Deck build.")
+            }
+            transfer?.detail = "Installing the on-device Home helper"
+            let installOutput = try await adb.runStreaming(["-s", device.serial, "install", "-r", helper.path], progress: progressHandler(from: 0.12, to: 0.55))
+            try InstallOutput.requireSuccess(installOutput)
+            transfer?.fraction = 0.58
+            let currentServices = try await adb.run(["-s", device.serial, "shell", "settings get secure enabled_accessibility_services"])
+            let services = FireTVHomeHelper.accessibilityServices(currentServices, enabling: true)
+            _ = try await adb.run(["-s", device.serial, "shell", "settings put secure \(FireTVHomeHelper.componentSetting) \(RemoteFiles.shellQuote(launcher.component))"])
+            _ = try await adb.run(["-s", device.serial, "shell", "settings put secure \(FireTVHomeHelper.enabledSetting) 1"])
+            _ = try await adb.run(["-s", device.serial, "shell", "settings put secure enabled_accessibility_services \(RemoteFiles.shellQuote(services))"])
+            _ = try await adb.run(["-s", device.serial, "shell", "settings put secure accessibility_enabled 1"])
+            _ = try? await adb.run(["-s", device.serial, "shell", "dumpsys deviceidle whitelist +\(FireTVHomeHelper.packageName)"])
             _ = try? await adb.run(["-s", device.serial, "shell", "cmd package set-home-activity --user 0 \(RemoteFiles.shellQuote(launcher.component))"])
-            _ = try await adb.run(["-s", device.serial, "shell", "am start -n \(RemoteFiles.shellQuote(launcher.component))"])
-            transfer?.fraction = 0.8
-            try? await Task.sleep(for: .milliseconds(450))
+            transfer?.fraction = 0.78
+            _ = try await adb.run(["-s", device.serial, "shell", "input keyevent KEYCODE_HOME"])
+            try? await Task.sleep(for: .milliseconds(900))
             let activity = try await adb.run(["-s", device.serial, "shell", "dumpsys activity activities"])
             guard ActivityParser.foreground(activity) == launcher.packageName else {
-                throw ADBError.commandFailed("Fire OS could not open \(launcher.name). The original Fire TV Home remains enabled.")
+                await disableFireTVLauncherRedirect(on: device)
+                throw ADBError.commandFailed("The on-device helper could not redirect Fire TV Home to \(launcher.name). The helper was disabled and Amazon Home was restored.")
             }
-            launcherRedirectTask?.cancel()
             launcherRedirect = LauncherRedirect(deviceID: device.id, serial: device.serial, launcher: launcher)
-            startLauncherRedirectMonitor()
             transfer?.fraction = 1
-            statusMessage = "Forcing Home to \(launcher.name) while ADB Deck stays connected"
-        } catch { report(error, operation: "Force \(launcher.name) via Mac") }
+            statusMessage = "\(launcher.name) will persist as Home without this Mac"
+        } catch { report(error, operation: "Enable persistent \(launcher.name)") }
     }
 
     func disableFireTVLauncherRedirect() async {
-        guard let redirect = launcherRedirect else { return }
-        launcherRedirectTask?.cancel()
-        launcherRedirectTask = nil
+        guard let redirect = launcherRedirect,
+              let device = devices.first(where: { $0.id == redirect.deviceID }) else { return }
+        await disableFireTVLauncherRedirect(on: device)
         launcherRedirect = nil
-        _ = try? await adb.run(["-s", redirect.serial, "shell", "cmd role add-role-holder --user 0 android.app.role.HOME com.amazon.tv.launcher 0"])
-        _ = try? await adb.run(["-s", redirect.serial, "shell", "cmd package set-home-activity --user 0 com.amazon.tv.launcher/.ui.HomeActivity_vNext"])
-        _ = try? await adb.run(["-s", redirect.serial, "shell", "input keyevent KEYCODE_HOME"])
         statusMessage = "Restored Fire TV Home"
     }
 
-    private func startLauncherRedirectMonitor() {
-        launcherRedirectTask = Task { [weak self] in
-            while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(1.25)) } catch { break }
-                await self?.redirectFireTVHomeIfNeeded()
-            }
+    private func disableFireTVLauncherRedirect(on device: AndroidDevice) async {
+        let currentServices = (try? await adb.run(["-s", device.serial, "shell", "settings get secure enabled_accessibility_services"])) ?? ""
+        let services = FireTVHomeHelper.accessibilityServices(currentServices, enabling: false)
+        _ = try? await adb.run(["-s", device.serial, "shell", "settings put secure \(FireTVHomeHelper.enabledSetting) 0"])
+        if services.isEmpty {
+            _ = try? await adb.run(["-s", device.serial, "shell", "settings delete secure enabled_accessibility_services"])
+            _ = try? await adb.run(["-s", device.serial, "shell", "settings put secure accessibility_enabled 0"])
+        } else {
+            _ = try? await adb.run(["-s", device.serial, "shell", "settings put secure enabled_accessibility_services \(RemoteFiles.shellQuote(services))"])
         }
+        _ = try? await adb.run(["-s", device.serial, "shell", "am force-stop \(FireTVHomeHelper.packageName)"])
+        _ = try? await adb.run(["-s", device.serial, "shell", "cmd package set-home-activity --user 0 com.amazon.tv.launcher/.ui.HomeActivity_vNext"])
+        _ = try? await adb.run(["-s", device.serial, "shell", "input keyevent KEYCODE_HOME"])
     }
 
-    private func redirectFireTVHomeIfNeeded() async {
-        guard let redirect = launcherRedirect else { return }
-        do {
-            let output = try await adb.run(["-s", redirect.serial, "shell", "dumpsys activity activities"])
-            guard let foreground = ActivityParser.foreground(output),
-                  foreground == "com.amazon.tv.launcher" || foreground == "com.amazon.firehomestarter" else { return }
-            _ = try await adb.run(["-s", redirect.serial, "shell", "am start -n \(RemoteFiles.shellQuote(redirect.launcher.component))"])
-        } catch {
-            launcherRedirectTask?.cancel()
-            launcherRedirectTask = nil
+    private func loadFireTVLauncherRedirect(on device: AndroidDevice) async {
+        guard device.kind == .fireTV else { launcherRedirect = nil; return }
+        async let enabledTask = try? adb.run(["-s", device.serial, "shell", "settings get secure \(FireTVHomeHelper.enabledSetting)"])
+        async let componentTask = try? adb.run(["-s", device.serial, "shell", "settings get secure \(FireTVHomeHelper.componentSetting)"])
+        async let servicesTask = try? adb.run(["-s", device.serial, "shell", "settings get secure enabled_accessibility_services"])
+        let (enabled, component, services) = await (enabledTask, componentTask, servicesTask)
+        let selected = component?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard enabled?.trimmingCharacters(in: .whitespacesAndNewlines) == "1",
+              services?.contains(FireTVHomeHelper.service) == true,
+              let selected, let launcher = launchers.first(where: { $0.component == selected }) else {
             launcherRedirect = nil
-            statusMessage = "Home redirect stopped: ADB connection was lost"
+            return
         }
+        launcherRedirect = LauncherRedirect(deviceID: device.id, serial: device.serial, launcher: launcher)
     }
 
     func loadFiles(at path: String? = nil) async {

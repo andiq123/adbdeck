@@ -204,21 +204,15 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
 
                     if let device = failure.device {
-                        GroupBox("Target device") {
-                            VStack(spacing: 9) {
-                                LabeledContent("Device", value: "\(device.manufacturer) \(device.model)")
-                                if let version = device.androidVersion {
-                                    LabeledContent("Android", value: version + (device.apiLevel.map { " · API \($0)" } ?? ""))
-                                }
-                                LabeledContent("Choose APK", value: device.recommendedAPKArchitecture ?? "Architecture not reported")
-                                if let abis = device.supportedABIs {
-                                    LabeledContent("Supported ABIs", value: abis)
-                                }
-                                LabeledContent("Connection", value: device.serial)
-                            }
-                            .textSelection(.enabled)
-                            .padding(6)
+                        Text("Target device")
+                            .font(.headline)
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 12)], spacing: 12) {
+                            diagnosticCard("Device", value: "\(device.manufacturer) \(device.model)", detail: device.typeLabel, symbol: device.symbol, color: .blue)
+                            diagnosticCard("Android", value: device.androidVersion.map { "Android \($0)" } ?? "Unknown", detail: device.apiLevel.map { "API \($0)" }, symbol: "checkmark.seal.fill", color: .green)
+                            diagnosticCard("Choose this APK", value: device.recommendedAPKArchitecture ?? "Architecture not reported", detail: device.supportedABIs.map { "Supports \($0)" }, symbol: "cpu.fill", color: .purple)
+                            diagnosticCard("Connection", value: device.serial, detail: device.adbState.rawValue, symbol: "network", color: .orange)
                         }
+                        .textSelection(.enabled)
                     }
 
                     if let technical = failure.technicalDetails {
@@ -235,17 +229,46 @@ struct ContentView: View {
                 .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
             }
             HStack {
-                Button("Copy Details") {
+                Button {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(failureCopyText(failure), forType: .string)
+                } label: {
+                    Label("Copy Details", systemImage: "doc.on.doc")
                 }
+                .buttonStyle(.bordered)
+                .tint(.blue)
                 Spacer()
                 Button("Close") { manager.lastError = nil }
+                    .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
             }
         }
         .padding(24)
         .frame(minWidth: 660, minHeight: 440)
+    }
+
+    private func diagnosticCard(_ title: String, value: String, detail: String?, symbol: String, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Label(title, systemImage: symbol)
+                .font(.caption.bold())
+                .foregroundStyle(color)
+            Text(value)
+                .font(.callout.weight(.semibold))
+                .lineLimit(2)
+            if let detail {
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 72, alignment: .topLeading)
+        .padding(13)
+        .background(color.opacity(0.1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(color.opacity(0.2), lineWidth: 1)
+        }
     }
 
     private func failureCopyText(_ failure: OperationFailure) -> String {
@@ -402,12 +425,16 @@ struct ContentView: View {
             }
             Spacer()
             if isCurrent {
-                Button("Background") { Task { await manager.backgroundCurrentApp() } }
+                Button { Task { await manager.backgroundCurrentApp() } } label: {
+                    Label("Background", systemImage: "house.fill")
+                }
+                    .tint(.orange)
                     .disabled(manager.isWorking)
             } else {
                 Button { Task { await manager.launch(app) } } label: {
                     Label("Open", systemImage: "play.fill")
                 }
+                .tint(.green)
                 .help("Open \(app.displayName)")
                 .disabled(manager.isWorking)
             }
@@ -415,6 +442,7 @@ struct ContentView: View {
                 Label("Force Quit", systemImage: "xmark.circle")
             }
             .labelStyle(.iconOnly)
+            .foregroundStyle(.red)
             .help("Force quit \(app.displayName)")
             .disabled(manager.isWorking)
         }
@@ -540,7 +568,7 @@ struct ContentView: View {
             ToolbarItemGroup {
                 if detailMode == .apps {
                     Button { isImporting = true } label: {
-                        Label("Install", systemImage: "square.and.arrow.down")
+                        Label("Install", systemImage: "square.and.arrow.down").foregroundStyle(.blue)
                     }
                     .help("Install an APK or ADB Deck app package")
                     .disabled(!device.adbState.isUsable || manager.isWorking)
@@ -554,17 +582,17 @@ struct ContentView: View {
                         Button { Task { await manager.pasteFiles() } } label: { Label("Paste", systemImage: "doc.on.clipboard") }
                             .disabled(manager.fileClipboard == nil)
                     } label: {
-                        Label("File actions", systemImage: "ellipsis.circle")
+                        Label("File actions", systemImage: "folder.badge.gearshape").foregroundStyle(.blue)
                     }
                     .disabled(!device.adbState.isUsable || manager.isWorking)
                 }
-                Button { showOptimizeConfirmation = true } label: { Label("Optimize", systemImage: "wand.and.stars") }
+                Button { showOptimizeConfirmation = true } label: { Label("Optimize", systemImage: "wand.and.stars").foregroundStyle(.purple) }
                     .help("Close cached background apps and clear temporary caches")
                     .disabled(!device.adbState.isUsable || manager.isWorking)
-                Button { showRemoteInput = true } label: { Label("Type on device", systemImage: "keyboard") }
+                Button { showRemoteInput = true } label: { Label("Type on device", systemImage: "keyboard").foregroundStyle(.teal) }
                     .help("Send Mac text and remote keys to the focused field")
                     .disabled(!device.adbState.isUsable || manager.isWorking)
-                Button { showDeviceActivity = true } label: { Label("Activity", systemImage: "rectangle.stack") }
+                Button { showDeviceActivity = true } label: { Label("Activity", systemImage: "rectangle.stack.fill").foregroundStyle(.orange) }
                     .help("See and control the current and recent apps")
                     .disabled(!device.adbState.isUsable || manager.isWorking)
                 Button { Task { await reloadDetail() } } label: { Label("Reload", systemImage: "arrow.clockwise") }
@@ -956,12 +984,15 @@ private struct AppRow: View {
             }
             Button(action: download) { Image(systemName: "square.and.arrow.down") }
                 .buttonStyle(.borderless)
+                .foregroundStyle(.blue)
                 .help("Clone app package")
             Button(action: launch) { Image(systemName: "play.fill") }
                 .buttonStyle(.borderless)
+                .foregroundStyle(.green)
                 .help("Open app")
             Button(role: .destructive, action: remove) { Image(systemName: "trash") }
                 .buttonStyle(.borderless)
+                .foregroundStyle(.red)
                 .help("Remove app")
         }
         .padding(.vertical, 5)
@@ -1146,6 +1177,7 @@ private struct RemoteFileRow: View {
             Spacer()
             Button(action: open) { Image(systemName: file.isDirectory ? "chevron.right" : "square.and.arrow.down") }
                 .buttonStyle(.borderless)
+                .foregroundStyle(file.isDirectory ? Color.accentColor : .blue)
                 .help(file.isDirectory ? "Open folder" : "Download")
         }
         .padding(.vertical, 5)

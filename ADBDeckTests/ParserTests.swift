@@ -224,6 +224,23 @@ final class ParserTests: XCTestCase {
         XCTAssertNil(ActivityParser.foreground("mResumedActivity: null"))
     }
 
+    func testLauncherParserFindsComponentsAndProtectsFallbacks() {
+        let output = """
+        3 activities found:
+          Activity #0:
+            priority=950 isDefault=true
+            com.amazon.tv.launcher/.ui.HomeActivity_vNext
+          Activity #1:
+            com.example.launcher/com.example.launcher.HomeActivity
+          Activity #2:
+            com.amazon.tv.settings.v2/.system.FallbackHome
+        """
+        let components = LauncherParser.components(output)
+        XCTAssertEqual(components, ["com.amazon.tv.launcher/.ui.HomeActivity_vNext", "com.example.launcher/com.example.launcher.HomeActivity", "com.amazon.tv.settings.v2/.system.FallbackHome"])
+        XCTAssertFalse(DeviceLauncher(component: components[0], name: "Fire TV Home").isFallback)
+        XCTAssertTrue(DeviceLauncher(component: components[2], name: "Fallback").isFallback)
+    }
+
     func testDeviceArchitectureRecommendationAndErrorFormatting() {
         let device = AndroidDevice(id: "192.168.1.50", name: "Fire TV", manufacturer: "Amazon", model: "AFTKRT", adbState: .connected, isAndroidLikely: true, hasCast: false, supportedABIs: "armeabi-v7a,armeabi", androidVersion: "11", apiLevel: "30")
         XCTAssertEqual(device.recommendedAPKArchitecture, "ARMv7 · armeabi-v7a (32-bit)")

@@ -32,6 +32,7 @@ struct ContentView: View {
     @State private var showOptimizeConfirmation = false
     @State private var showRemoteInput = false
     @State private var showDeviceActivity = false
+    @State private var showLaunchers = false
     @State private var remoteText = ""
     @State private var pendingPowerAction: DevicePowerAction?
 
@@ -175,6 +176,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showDeviceActivity) {
             deviceActivitySheet
+        }
+        .sheet(isPresented: $showLaunchers) {
+            launcherSheet
         }
     }
 
@@ -421,6 +425,77 @@ struct ContentView: View {
         .task { await manager.loadActivity() }
     }
 
+    private var launcherSheet: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                Label("Default launcher", systemImage: "house.fill")
+                    .font(.title2.bold())
+                    .foregroundStyle(.green)
+                Spacer()
+                if manager.isLoadingLaunchers { ProgressView().controlSize(.small) }
+                Button { Task { await manager.loadLaunchers() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
+                    .labelStyle(.iconOnly)
+                    .disabled(manager.isLoadingLaunchers || manager.isWorking)
+            }
+            Text("Choose the app Android opens when Home is pressed. Only installed apps that advertise the HOME role are shown.")
+                .foregroundStyle(.secondary)
+            if manager.selectedDevice?.kind == .fireTV {
+                Label("Fire OS may lock Fire TV Home. ADB Deck verifies every change and never disables Amazon system packages.", systemImage: "exclamationmark.shield.fill")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                    .padding(12)
+                    .background(.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+            }
+            if manager.launchers.isEmpty, manager.isLoadingLaunchers {
+                ProgressView("Detecting installed launchers…")
+                    .frame(maxWidth: .infinity, minHeight: 180)
+            } else if manager.launchers.isEmpty {
+                ContentUnavailableView("No launchers reported", systemImage: "house.slash", description: Text("This device did not expose any HOME activities through ADB."))
+                    .frame(minHeight: 180)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(manager.launchers) { launcher in
+                            HStack(spacing: 12) {
+                                Image(systemName: launcher.isFallback ? "cross.case.fill" : "house.fill")
+                                    .foregroundStyle(launcher.isFallback ? Color.secondary : Color.green)
+                                    .frame(width: 34, height: 34)
+                                    .background((launcher.isFallback ? Color.secondary : .green).opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(launcher.name).fontWeight(.semibold)
+                                    Text(launcher.component).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1)
+                                }
+                                Spacer()
+                                if launcher.component == manager.currentLauncher {
+                                    Label("Default", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                                } else if launcher.isFallback {
+                                    Text("Recovery fallback").font(.caption).foregroundStyle(.secondary)
+                                } else {
+                                    Button("Use") { Task { await manager.setDefaultLauncher(launcher) } }
+                                        .buttonStyle(.borderedProminent)
+                                        .tint(.green)
+                                        .disabled(manager.isWorking)
+                                }
+                            }
+                            .padding(12)
+                            .background(.quaternary.opacity(0.7), in: RoundedRectangle(cornerRadius: 12))
+                        }
+                    }
+                }
+                .frame(maxHeight: 360)
+            }
+            HStack {
+                Text("You can always select the original launcher again from this list.").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Done") { showLaunchers = false }.keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 640)
+        .frame(minHeight: 420)
+        .task { await manager.loadLaunchers() }
+    }
+
     private func activityRow(_ app: DeviceApp, isCurrent: Bool) -> some View {
         HStack(spacing: 12) {
             Image(systemName: app.symbol)
@@ -619,6 +694,9 @@ struct ContentView: View {
                     .disabled(!device.adbState.isUsable || manager.isWorking)
                 Button { showDeviceActivity = true } label: { Label("Activity", systemImage: "rectangle.stack.fill").foregroundStyle(.orange) }
                     .help("See and control the current and recent apps")
+                    .disabled(!device.adbState.isUsable || manager.isWorking)
+                Button { showLaunchers = true } label: { Label("Launcher", systemImage: "house.fill").foregroundStyle(.green) }
+                    .help("Choose the device's default Home launcher")
                     .disabled(!device.adbState.isUsable || manager.isWorking)
                 Menu {
                     Section(manager.powerState.rawValue) {

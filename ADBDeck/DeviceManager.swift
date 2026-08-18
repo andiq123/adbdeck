@@ -80,7 +80,7 @@ enum ADBState: String, Codable, Sendable {
     var isUsable: Bool { self == .connected }
 }
 
-enum DeviceKind: Sendable {
+enum DeviceKind: Sendable, Equatable {
     case fireTV, television, phone, tablet, automotive, watch, androidDevice, cast
     case router, raspberryPi, printer, camera, computer, network
 
@@ -423,6 +423,44 @@ enum ActivityParser {
               match.numberOfRanges > 1,
               let capture = Range(match.range(at: 1), in: text) else { return nil }
         return String(text[capture])
+    }
+}
+
+struct DeviceLauncher: Identifiable, Hashable, Sendable {
+    let component: String
+    let name: String
+    var id: String { component }
+    var packageName: String { String(component.split(separator: "/", maxSplits: 1).first ?? "") }
+    var isFallback: Bool {
+        let value = component.lowercased()
+        return value.contains("fallbackhome") || value.contains("recoveryactivity") || value.contains("firehomestarter")
+    }
+}
+
+enum LauncherParser {
+    private static let pattern = try! NSRegularExpression(pattern: #"([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+/[A-Za-z0-9_.$]+)"#)
+    private static let knownNames = [
+        "com.amazon.tv.launcher": "Fire TV Home",
+        "com.amazon.firehomestarter": "Fire TV Home Starter",
+        "com.google.android.apps.tv.launcherx": "Google TV Home",
+        "com.android.tv.settings": "Android Fallback Home",
+        "com.amazon.tv.settings.v2": "Fire TV Fallback Home"
+    ]
+
+    static func components(_ output: String) -> [String] {
+        var seen = Set<String>()
+        return output.split(separator: "\n").compactMap { line in
+            let text = String(line)
+            let range = NSRange(text.startIndex..., in: text)
+            guard let match = pattern.firstMatch(in: text, range: range), let valueRange = Range(match.range(at: 1), in: text) else { return nil }
+            let value = String(text[valueRange])
+            return seen.insert(value).inserted ? value : nil
+        }
+    }
+
+    static func name(for component: String, apps: [DeviceApp]) -> String {
+        let package = String(component.split(separator: "/", maxSplits: 1).first ?? "")
+        return apps.first { $0.packageName == package }?.displayName ?? knownNames[package] ?? DeviceApp(packageName: package, isSystem: false).displayName
     }
 }
 
@@ -1288,6 +1326,9 @@ final class DeviceManager {
     var foregroundPackage: String?
     var recentPackages: [String] = []
     var isLoadingActivity = false
+    var launchers: [DeviceLauncher] = []
+    var currentLauncher: String?
+    var isLoadingLaunchers = false
 
     private let adb = ADBClient()
     private var previousCPU: [String: CPUTicks] = [:]
@@ -1915,6 +1956,61 @@ final class DeviceManager {
         } catch {
             report(error, operation: "Force quit \(app.displayName)")
         }
+    }
+
+    func loadLaunchers() async {
+        guard let device = selectedDevice, device.adbState.isUsable else {
+            launchers = []
+            currentLauncher = nil
+            return
+        }
+        guard !isLoadingLaunchers else { return }
+        isLoadingLaunchers = true
+        defer { isLoadingLaunchers = false }
+        do {
+            let intent = "-a android.intent.action.MAIN -c android.intent.category.HOME"
+            async let choicesTask = adb.run(["-s", device.serial, "shell", "cmd package query-activities --brief --components \(intent)"])
+            async let currentTask = adb.run(["-s", device.serial, "shell", "cmd package resolve-activity --brief --components \(intent)"])
+            let (choicesOutput, currentOutput) = try await (choicesTask, currentTask)
+            guard selectedDevice?.id == device.id else { return }
+            let current = LauncherParser.components(currentOutput).first
+            launchers = LauncherParser.components(choicesOutput)
+                .map { DeviceLauncher(component: $0, name: LauncherParser.name(for: $0, apps: apps)) }
+                .sorted {
+                    if ($0.component == current) != ($1.component == current) { return $0.component == current }
+                    if $0.isFallback != $1.isFallback { return !$0.isFallback }
+                    return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+                }
+            currentLauncher = current
+            statusMessage = "Found \(launchers.filter { !$0.isFallback }.count) launcher\(launchers.filter { !$0.isFallback }.count == 1 ? "" : "s")"
+        } catch { report(error, operation: "Detect launchers") }
+    }
+
+    func setDefaultLauncher(_ launcher: DeviceLauncher) async {
+        guard let device = selectedDevice, device.adbState.isUsable else { return }
+        guard launchers.contains(launcher), !launcher.isFallback else {
+            report(ADBError.commandFailed("Android recovery and starter activities cannot be selected as the everyday launcher."), operation: "Change launcher")
+            return
+        }
+        let ownsActivity = beginActivity("Changing launcher", detail: launcher.name, fraction: 0.2)
+        defer { endActivity(ownsActivity) }
+        do {
+            let output = try await adb.run(["-s", device.serial, "shell", "cmd package set-home-activity --user 0 \(RemoteFiles.shellQuote(launcher.component))"])
+            transfer?.fraction = 0.7
+            try? await Task.sleep(for: .milliseconds(500))
+            let intent = "-a android.intent.action.MAIN -c android.intent.category.HOME"
+            let resolved = try await adb.run(["-s", device.serial, "shell", "cmd package resolve-activity --brief --components \(intent)"])
+            let actual = LauncherParser.components(resolved).first
+            guard actual == launcher.component else {
+                let note = device.kind == .fireTV ? "Fire OS refused the default-home change. Amazon firmware may lock Fire TV Home; ADB Deck did not disable protected system packages." : "Android kept \(actual ?? "an unknown launcher") as the default."
+                throw ADBError.commandFailed("\(note)\n\nRequested: \(launcher.component)\nDevice response: \(output.isEmpty ? "No response" : output)")
+            }
+            transfer?.fraction = 0.9
+            _ = try await adb.run(["-s", device.serial, "shell", "input keyevent KEYCODE_HOME"])
+            currentLauncher = launcher.component
+            transfer?.fraction = 1
+            statusMessage = "\(launcher.name) is now the default launcher"
+        } catch { report(error, operation: "Use \(launcher.name)") }
     }
 
     func loadFiles(at path: String? = nil) async {

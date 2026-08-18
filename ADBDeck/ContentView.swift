@@ -606,15 +606,8 @@ struct ContentView: View {
                                     Text("Recovery fallback").font(.caption).foregroundStyle(.secondary)
                                 } else {
                                     HStack(spacing: 8) {
-                                        if launcher.component == manager.currentLauncher {
-                                            Label("Default", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-                                        } else {
-                                            Button("Use") { Task { await manager.setDefaultLauncher(launcher) } }
-                                                .buttonStyle(.borderedProminent)
-                                                .tint(.green)
-                                        }
-                                        if manager.selectedDevice?.kind == .fireTV {
-                                            Toggle("Persistent", isOn: Binding(
+                                        if manager.selectedDevice?.kind == .fireTV, !launcher.packageName.hasPrefix("com.amazon.") {
+                                            Toggle("Use persistently", isOn: Binding(
                                                 get: { manager.launcherRedirect?.launcher == launcher },
                                                 set: { enabled in
                                                     if enabled { pendingLauncherRedirect = launcher }
@@ -623,6 +616,12 @@ struct ContentView: View {
                                             ))
                                             .toggleStyle(.switch)
                                             .tint(.orange)
+                                        } else if launcher.component == manager.currentLauncher {
+                                            Label("Default", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                                        } else {
+                                            Button("Use") { Task { await manager.setDefaultLauncher(launcher) } }
+                                                .buttonStyle(.borderedProminent)
+                                                .tint(.green)
                                         }
                                     }
                                     .disabled(manager.isWorking)
@@ -655,7 +654,7 @@ struct ContentView: View {
                 Task { await manager.enableFireTVLauncherRedirect(launcher) }
             }
         } message: { launcher in
-            Text("ADB Deck will install and enable its small Home helper on this Fire TV. \(launcher.name) will remain active after the Mac disconnects and after restarts. You can reconnect later to disable it; Amazon Home is never removed.")
+            Text("ADB Deck will install its small Home helper, open \(launcher.name), and verify the complete flow. It will remain active after the Mac disconnects and after restarts. You can reconnect later to turn it off; Amazon Home is never removed.")
         }
     }
 

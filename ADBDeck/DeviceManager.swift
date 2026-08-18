@@ -2474,6 +2474,7 @@ final class DeviceManager {
             transfer?.detail = "Installing the on-device Home helper"
             let installOutput = try await adb.runStreaming(["-s", device.serial, "install", "-r", helper.path], progress: progressHandler(from: 0.12, to: 0.55))
             try InstallOutput.requireSuccess(installOutput)
+            try? await Task.sleep(for: .milliseconds(500))
             transfer?.fraction = 0.58
             let currentServices = try await adb.run(["-s", device.serial, "shell", "settings get secure enabled_accessibility_services"])
             let services = FireTVHomeHelper.accessibilityServices(currentServices, enabling: true)
@@ -2481,6 +2482,19 @@ final class DeviceManager {
             _ = try await adb.run(["-s", device.serial, "shell", "settings put secure \(FireTVHomeHelper.enabledSetting) 1"])
             _ = try await adb.run(["-s", device.serial, "shell", "settings put secure enabled_accessibility_services \(RemoteFiles.shellQuote(services))"])
             _ = try await adb.run(["-s", device.serial, "shell", "settings put secure accessibility_enabled 1"])
+            var helperIsBound = false
+            for _ in 0..<12 {
+                let accessibility = try await adb.run(["-s", device.serial, "shell", "dumpsys accessibility"])
+                if accessibility.contains("label=ADB Deck Home redirect") {
+                    helperIsBound = true
+                    break
+                }
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+            guard helperIsBound else {
+                await disableFireTVLauncherRedirect(on: device)
+                throw ADBError.commandFailed("Fire OS installed the Home helper but did not start its accessibility service. The helper was disabled and Amazon Home was restored.")
+            }
             _ = try? await adb.run(["-s", device.serial, "shell", "dumpsys deviceidle whitelist +\(FireTVHomeHelper.packageName)"])
             _ = try? await adb.run(["-s", device.serial, "shell", "cmd package set-home-activity --user 0 \(RemoteFiles.shellQuote(launcher.component))"])
             transfer?.fraction = 0.78

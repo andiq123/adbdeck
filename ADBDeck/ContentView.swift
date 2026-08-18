@@ -647,7 +647,7 @@ struct ContentView: View {
         .frame(width: 640)
         .frame(minHeight: 420)
         .overlay(alignment: .top) {
-            if let transfer = manager.transfer {
+            if let transfer = manager.transfer, !showLaunchers {
                 TransferBanner(transfer: transfer)
                     .frame(maxWidth: 560)
                     .padding(16)

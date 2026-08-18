@@ -11,11 +11,19 @@ public final class HomeRedirectService extends AccessibilityService {
     private static final String COMPONENT = "adbdeck_launcher_component";
     private long lastRedirect;
 
+    @Override protected void onServiceConnected() {
+        redirect();
+    }
+
     @Override public void onAccessibilityEvent(AccessibilityEvent event) {
-        if (event.getEventType() != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
-                || Settings.Secure.getInt(getContentResolver(), ENABLED, 0) != 1) return;
+        if (event.getEventType() != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return;
         CharSequence source = event.getPackageName();
         if (source == null || !(source.equals("com.amazon.tv.launcher") || source.equals("com.amazon.firehomestarter"))) return;
+        redirect();
+    }
+
+    private void redirect() {
+        if (Settings.Secure.getInt(getContentResolver(), ENABLED, 0) != 1) return;
         long now = System.currentTimeMillis();
         if (now - lastRedirect < 900) return;
         ComponentName target = ComponentName.unflattenFromString(Settings.Secure.getString(getContentResolver(), COMPONENT));

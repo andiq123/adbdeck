@@ -674,6 +674,9 @@ struct ContentView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer()
+                Text("v" + (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.tertiary)
             }
             .padding(12)
             .background(.thinMaterial)

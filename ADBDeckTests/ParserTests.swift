@@ -241,6 +241,36 @@ final class ParserTests: XCTestCase {
         XCTAssertTrue(DeviceLauncher(component: components[2], name: "Fallback").isFallback)
     }
 
+    func testAppInspectionScreenMappingAndMediaParsing() {
+        let inspection = AppInspectionParser.parse("""
+          versionCode=2400 minSdk=17 targetSdk=34
+          versionName=32.10
+          User 0: installed=true suspended=false stopped=false enabled=0
+            runtime permissions:
+              android.permission.CAMERA: granted=true, flags=[ USER_SET]
+              android.permission.RECORD_AUDIO: granted=false, flags=[]
+          User 10: installed=false
+        """, supportsCacheOnlyClear: true)
+        XCTAssertEqual(inspection.versionName, "32.10")
+        XCTAssertEqual(inspection.versionCode, "2400")
+        XCTAssertEqual(inspection.permissions, [AppPermission(name: "android.permission.CAMERA", granted: true), AppPermission(name: "android.permission.RECORD_AUDIO", granted: false)])
+        XCTAssertTrue(inspection.supportsCacheOnlyClear)
+
+        let center = ScreenGeometry.devicePoint(at: CGPoint(x: 200, y: 150), in: CGSize(width: 400, height: 300), imageSize: CGSize(width: 1920, height: 1080))
+        XCTAssertEqual(center?.x ?? 0, 960, accuracy: 0.01)
+        XCTAssertEqual(center?.y ?? 0, 540, accuracy: 0.01)
+        XCTAssertNil(ScreenGeometry.devicePoint(at: CGPoint(x: 10, y: 10), in: CGSize(width: 400, height: 300), imageSize: CGSize(width: 1920, height: 1080)))
+
+        let media = MediaSessionParser.parse("""
+          Media button session is org.smarttube.stable/org.smarttube.stable (userId=0)
+          Sessions Stack:
+            package=org.smarttube.stable
+            state=PlaybackState {state=PLAYING(3), position=0}
+            metadata: size=6, description=Example Video, Example Channel, null
+        """)
+        XCTAssertEqual(media, MediaSessionInfo(packageName: "org.smarttube.stable", state: "Playing", title: "Example Video"))
+    }
+
     func testDeviceArchitectureRecommendationAndErrorFormatting() {
         let device = AndroidDevice(id: "192.168.1.50", name: "Fire TV", manufacturer: "Amazon", model: "AFTKRT", adbState: .connected, isAndroidLikely: true, hasCast: false, supportedABIs: "armeabi-v7a,armeabi", androidVersion: "11", apiLevel: "30")
         XCTAssertEqual(device.recommendedAPKArchitecture, "ARMv7 · armeabi-v7a (32-bit)")

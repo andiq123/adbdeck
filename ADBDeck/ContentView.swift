@@ -34,6 +34,8 @@ struct ContentView: View {
     @State private var showDeviceActivity = false
     @State private var showLaunchers = false
     @State private var remoteText = ""
+    @State private var liveRemotePreview = true
+    @State private var inspectedApp: DeviceApp?
     @State private var pendingPowerAction: DevicePowerAction?
 
     private var androidDevices: [AndroidDevice] { manager.devices.filter { $0.isAndroidLikely } }
@@ -102,6 +104,10 @@ struct ContentView: View {
             manager.performance = nil
             manager.performanceError = nil
             manager.powerState = .unknown
+            manager.screenCapture = nil
+            manager.screenCaptureError = nil
+            manager.appInspection = nil
+            manager.mediaSession = nil
             Task { await reloadDetail() }
         }
         .onChange(of: detailMode) { Task { await reloadDetail() } }
@@ -179,6 +185,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showLaunchers) {
             launcherSheet
+        }
+        .sheet(item: $inspectedApp) { app in
+            AppInspectorSheet(manager: manager, app: app)
         }
     }
 
@@ -322,10 +331,35 @@ struct ContentView: View {
 
     private var remoteInputSheet: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Label("Type on \(manager.selectedDevice?.name ?? "device")", systemImage: "keyboard")
-                .font(.title2.bold())
-            Text("Focus a text field on the TV, then type or paste here.")
-                .foregroundStyle(.secondary)
+            HStack {
+                Label(manager.selectedDevice.map { $0.kind == .television || $0.kind == .fireTV ? "TV Remote" : "Device Remote" } ?? "Device Remote", systemImage: "dot.radiowaves.left.and.right")
+                    .font(.title2.bold())
+                    .foregroundStyle(.teal)
+                Spacer()
+                if manager.isCapturingScreen { ProgressView().controlSize(.small) }
+                Toggle("Live", isOn: $liveRemotePreview).toggleStyle(.switch).controlSize(.small)
+                Button { Task { await manager.captureScreen() } } label: { Label("Refresh screen", systemImage: "arrow.clockwise") }
+                    .labelStyle(.iconOnly)
+                    .disabled(manager.isCapturingScreen)
+            }
+            if let media = manager.mediaSession {
+                HStack(spacing: 8) {
+                    Image(systemName: media.state == "Playing" ? "play.circle.fill" : "pause.circle.fill").foregroundStyle(.purple)
+                    Text(media.title ?? DeviceApp(packageName: media.packageName, isSystem: false).displayName).lineLimit(1)
+                    Text(media.state).font(.caption.bold()).foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 10).padding(.vertical, 7)
+                .background(.purple.opacity(0.1), in: Capsule())
+            }
+            HStack(alignment: .top, spacing: 18) {
+                RemoteScreenPreview(capture: manager.screenCapture, isLoading: manager.isCapturingScreen, error: manager.screenCaptureError) { x, y in
+                    Task { await manager.tapScreen(x: x, y: y) }
+                }
+                remoteControlPad
+            }
+            Divider()
+            Text("Keyboard")
+                .font(.headline)
             TextField("Text to send", text: $remoteText, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(1...4)
@@ -335,8 +369,6 @@ struct ContentView: View {
                     remoteText = NSPasteboard.general.string(forType: .string) ?? ""
                 }
                 Spacer()
-                remoteKey("Back", symbol: "chevron.backward", code: "KEYCODE_BACK")
-                remoteKey("Home", symbol: "house", code: "KEYCODE_HOME")
                 remoteKey("Delete", symbol: "delete.left", code: "KEYCODE_DEL")
                 remoteKey("Enter", symbol: "return", code: "KEYCODE_ENTER")
             }
@@ -353,7 +385,62 @@ struct ContentView: View {
             }
         }
         .padding(24)
-        .frame(width: 520)
+        .frame(width: 820)
+        .task {
+            manager.screenCapture = nil
+            async let screen: Void = manager.captureScreen()
+            async let media: Void = manager.loadMediaSession()
+            _ = await (screen, media)
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(2)) } catch { break }
+                guard liveRemotePreview else { continue }
+                async let nextScreen: Void = manager.captureScreen()
+                async let nextMedia: Void = manager.loadMediaSession()
+                _ = await (nextScreen, nextMedia)
+            }
+        }
+    }
+
+    private var remoteControlPad: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 8) {
+                remoteKey("Back", symbol: "chevron.backward", code: "KEYCODE_BACK")
+                remoteKey("Home", symbol: "house.fill", code: "KEYCODE_HOME")
+                remoteKey("Menu", symbol: "line.3.horizontal", code: "KEYCODE_MENU")
+            }
+            VStack(spacing: 3) {
+                remoteKey("Up", symbol: "chevron.up", code: "KEYCODE_DPAD_UP").frame(width: 46, height: 38)
+                HStack(spacing: 3) {
+                    remoteKey("Left", symbol: "chevron.left", code: "KEYCODE_DPAD_LEFT").frame(width: 46, height: 38)
+                    remoteKey("Select", symbol: "circle.inset.filled", code: "KEYCODE_DPAD_CENTER").frame(width: 46, height: 38)
+                    remoteKey("Right", symbol: "chevron.right", code: "KEYCODE_DPAD_RIGHT").frame(width: 46, height: 38)
+                }
+                remoteKey("Down", symbol: "chevron.down", code: "KEYCODE_DPAD_DOWN").frame(width: 46, height: 38)
+            }
+            .buttonStyle(.bordered)
+            HStack(spacing: 8) {
+                remoteKey("Volume down", symbol: "speaker.minus.fill", code: "KEYCODE_VOLUME_DOWN")
+                remoteKey("Mute", symbol: "speaker.slash.fill", code: "KEYCODE_VOLUME_MUTE")
+                remoteKey("Volume up", symbol: "speaker.plus.fill", code: "KEYCODE_VOLUME_UP")
+            }
+            HStack(spacing: 8) {
+                remoteKey("Previous", symbol: "backward.fill", code: "KEYCODE_MEDIA_PREVIOUS")
+                remoteKey("Play or pause", symbol: "playpause.fill", code: "KEYCODE_MEDIA_PLAY_PAUSE")
+                remoteKey("Next", symbol: "forward.fill", code: "KEYCODE_MEDIA_NEXT")
+            }
+            if manager.selectedDevice?.kind == .television || manager.selectedDevice?.kind == .fireTV {
+                HStack(spacing: 8) {
+                    remoteKey("TV input", symbol: "rectangle.on.rectangle", code: "KEYCODE_TV_INPUT")
+                    remoteKey("Settings", symbol: "gearshape.fill", code: "KEYCODE_SETTINGS")
+                    remoteKey("Captions", symbol: "captions.bubble.fill", code: "KEYCODE_CAPTIONS")
+                }
+            }
+            Text("Click the preview to tap the device screen.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(width: 205)
     }
 
     private var deviceActivitySheet: some View {
@@ -689,8 +776,8 @@ struct ContentView: View {
                 Button { showOptimizeConfirmation = true } label: { Label("Optimize", systemImage: "wand.and.stars").foregroundStyle(.purple) }
                     .help("Close cached background apps and clear temporary caches")
                     .disabled(!device.adbState.isUsable || manager.isWorking)
-                Button { showRemoteInput = true } label: { Label("Type on device", systemImage: "keyboard").foregroundStyle(.teal) }
-                    .help("Send Mac text and remote keys to the focused field")
+                Button { showRemoteInput = true } label: { Label("Remote", systemImage: "dot.radiowaves.left.and.right").foregroundStyle(.teal) }
+                    .help("Control the device, view its screen, and send text")
                     .disabled(!device.adbState.isUsable || manager.isWorking)
                 Button { showDeviceActivity = true } label: { Label("Activity", systemImage: "rectangle.stack.fill").foregroundStyle(.orange) }
                     .help("See and control the current and recent apps")
@@ -767,6 +854,7 @@ struct ContentView: View {
                            dateLabel: appSort == .installed ? "Installed" : appSort == .updated ? "Updated" : nil,
                            date: appSort == .installed ? app.installedAt : appSort == .updated ? app.updatedAt : nil,
                            download: { chooseDownloadFolder(for: app) },
+                           inspect: { inspectedApp = app },
                            launch: { Task { await manager.launch(app) } },
                            remove: { appToRemove = app })
                 }
@@ -1076,6 +1164,7 @@ private struct AppRow: View {
     let dateLabel: String?
     let date: Date?
     let download: () -> Void
+    let inspect: () -> Void
     let launch: () -> Void
     let remove: () -> Void
 
@@ -1125,6 +1214,10 @@ private struct AppRow: View {
                 .buttonStyle(.borderless)
                 .foregroundStyle(.blue)
                 .help("Clone app package")
+            Button(action: inspect) { Image(systemName: "info.circle.fill") }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.purple)
+                .help("Inspect app")
             Button(action: launch) { Image(systemName: "play.fill") }
                 .buttonStyle(.borderless)
                 .foregroundStyle(.green)
@@ -1142,11 +1235,172 @@ private struct AppRow: View {
         .transition(.asymmetric(insertion: .move(edge: .top).combined(with: .opacity), removal: .scale(scale: 0.98).combined(with: .opacity)))
         .accessibilityHint(isNew ? "Newly installed" : isRemoving ? "Being removed" : "")
         .contextMenu {
+            Button("Inspect", action: inspect)
             Button("Clone app package", action: download)
             Button("Open", action: launch)
             Divider()
             Button("Remove", role: .destructive, action: remove)
         }
+    }
+}
+
+private struct RemoteScreenPreview: View {
+    let capture: ScreenCapture?
+    let isLoading: Bool
+    let error: String?
+    let tap: (Int, Int) -> Void
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 14).fill(.black)
+            if let capture, let image = NSImage(data: capture.data) {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .overlay {
+                        GeometryReader { proxy in
+                            Color.clear
+                                .contentShape(Rectangle())
+                                .gesture(SpatialTapGesture().onEnded { value in
+                                    guard let point = ScreenGeometry.devicePoint(
+                                        at: value.location,
+                                        in: proxy.size,
+                                        imageSize: CGSize(width: capture.width, height: capture.height)
+                                    ) else { return }
+                                    tap(Int(point.x), Int(point.y))
+                                })
+                        }
+                    }
+            } else if isLoading {
+                ProgressView("Capturing screen…").tint(.white).foregroundStyle(.white)
+            } else {
+                ContentUnavailableView("Preview unavailable", systemImage: "display.trianglebadge.exclamationmark", description: Text(error ?? "Refresh to request a screenshot through ADB."))
+                    .foregroundStyle(.white)
+            }
+        }
+        .frame(width: 535, height: 301)
+        .overlay(alignment: .bottomTrailing) {
+            if let capture {
+                Text("\(capture.width) × \(capture.height) · \(capture.capturedAt.formatted(date: .omitted, time: .standard))")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.8))
+                    .padding(7)
+                    .background(.black.opacity(0.6), in: Capsule())
+                    .padding(8)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+}
+
+@MainActor
+private struct AppInspectorSheet: View {
+    @Bindable var manager: DeviceManager
+    let app: DeviceApp
+    @State private var confirmClearData = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 14) {
+                Image(systemName: app.symbol)
+                    .font(.title2)
+                    .foregroundStyle(.purple)
+                    .frame(width: 48, height: 48)
+                    .background(.purple.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(app.displayName).font(.title2.bold())
+                    Text(app.packageName).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+                }
+                Spacer()
+                if manager.isLoadingInspection { ProgressView().controlSize(.small) }
+                Button { Task { await manager.loadInspection(for: app) } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
+                    .labelStyle(.iconOnly)
+                    .disabled(manager.isLoadingInspection || manager.isWorking)
+            }
+
+            if let inspection = manager.appInspection {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 145), spacing: 10)], spacing: 10) {
+                    inspectorFact("Version", inspection.versionName ?? "Unknown", detail: inspection.versionCode.map { "Code \($0)" }, color: .blue)
+                    inspectorFact("Android support", inspection.minSDK.map { "API \($0)+" } ?? "Unknown", detail: inspection.targetSDK.map { "Targets API \($0)" }, color: .green)
+                    inspectorFact("State", inspection.isSuspended ? "Suspended" : inspection.isStopped ? "Stopped" : "Ready", detail: inspection.enabledState, color: inspection.isSuspended ? .red : .orange)
+                    inspectorFact("Storage", app.storage.map { ByteCountFormatter.string(fromByteCount: $0.total, countStyle: .file) } ?? "Unavailable", detail: app.storage.map { "Data \(ByteCountFormatter.string(fromByteCount: $0.data, countStyle: .file)) · Cache \(ByteCountFormatter.string(fromByteCount: $0.cache, countStyle: .file))" }, color: .purple)
+                }
+
+                HStack(spacing: 10) {
+                    Button { Task { await manager.launch(app) } } label: { Label("Open", systemImage: "play.fill") }.tint(.green)
+                    Button { Task { await manager.forceQuit(app) } } label: { Label("Force Quit", systemImage: "xmark.circle.fill") }.tint(.orange)
+                    Spacer()
+                    Button { Task { await manager.clearCache(for: app) } } label: { Label("Clear Cache", systemImage: "eraser.fill") }
+                        .disabled(!inspection.supportsCacheOnlyClear || manager.isWorking)
+                        .help(inspection.supportsCacheOnlyClear ? "Remove temporary files while keeping app data" : "This Android version cannot clear only one app's cache through ADB")
+                    Button(role: .destructive) { confirmClearData = true } label: { Label("Clear All Data", systemImage: "trash.slash.fill") }
+                        .disabled(manager.isWorking)
+                }
+                .buttonStyle(.bordered)
+
+                HStack {
+                    Text("Runtime permissions").font(.headline)
+                    Spacer()
+                    Text("\(inspection.permissions.filter(\.granted).count) of \(inspection.permissions.count) granted")
+                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                }
+                if inspection.permissions.isEmpty {
+                    ContentUnavailableView("No runtime permissions", systemImage: "checkmark.shield", description: Text("Android reports no user-changeable permissions for this app."))
+                        .frame(minHeight: 120)
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(inspection.permissions) { permission in
+                                HStack(spacing: 10) {
+                                    Image(systemName: permission.granted ? "checkmark.shield.fill" : "shield.slash")
+                                        .foregroundStyle(permission.granted ? Color.green : Color.secondary)
+                                        .frame(width: 24)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(permission.shortName.replacingOccurrences(of: "_", with: " ").capitalized).fontWeight(.medium)
+                                        Text(permission.name).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1)
+                                    }
+                                    Spacer()
+                                    Button(permission.granted ? "Revoke" : "Grant") {
+                                        Task { await manager.setPermission(permission, granted: !permission.granted, for: app) }
+                                    }
+                                    .tint(permission.granted ? .orange : .green)
+                                    .disabled(manager.isWorking)
+                                }
+                                .padding(.vertical, 9)
+                                Divider()
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 250)
+                }
+            } else if manager.isLoadingInspection {
+                ProgressView("Reading package details…").frame(maxWidth: .infinity, minHeight: 280)
+            } else {
+                ContentUnavailableView("Inspection unavailable", systemImage: "info.circle", description: Text("Refresh to read this package through ADB."))
+                    .frame(minHeight: 280)
+            }
+        }
+        .padding(24)
+        .frame(width: 700)
+        .frame(minHeight: 560)
+        .task { await manager.loadInspection(for: app) }
+        .alert("Clear all app data?", isPresented: $confirmClearData) {
+            Button("Cancel", role: .cancel) {}
+            Button("Clear Data", role: .destructive) { Task { await manager.clearData(for: app) } }
+        } message: {
+            Text("This resets \(app.displayName), removing its accounts, settings, downloads, and cache. The app remains installed. This cannot be undone.")
+        }
+    }
+
+    private func inspectorFact(_ title: String, _ value: String, detail: String?, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.caption.bold()).foregroundStyle(color)
+            Text(value).font(.headline).lineLimit(1)
+            if let detail { Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+        }
+        .frame(maxWidth: .infinity, minHeight: 62, alignment: .topLeading)
+        .padding(11)
+        .background(color.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
     }
 }
 

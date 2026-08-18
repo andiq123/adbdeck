@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import Network
 import Observation
 import SwiftUI
@@ -30,6 +31,12 @@ private final class ProcessBuffer: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return String(decoding: data, as: UTF8.self)
+    }
+
+    var snapshot: Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return data
     }
 }
 
@@ -391,6 +398,124 @@ struct DeviceApp: Identifiable, Hashable, Sendable {
         if ["game", "geforce"].contains(where: value.contains) { return "gamecontroller.fill" }
         if ["settings", "tools", "adb"].contains(where: value.contains) { return "wrench.and.screwdriver.fill" }
         return isSystem ? "gearshape.2.fill" : "app.fill"
+    }
+}
+
+struct AppPermission: Identifiable, Hashable, Sendable {
+    let name: String
+    let granted: Bool
+    var id: String { name }
+    var shortName: String { name.split(separator: ".").last.map(String.init) ?? name }
+}
+
+struct AppInspection: Equatable, Sendable {
+    let versionName: String?
+    let versionCode: String?
+    let minSDK: String?
+    let targetSDK: String?
+    let isStopped: Bool
+    let isSuspended: Bool
+    let enabledState: String
+    let permissions: [AppPermission]
+    let supportsCacheOnlyClear: Bool
+}
+
+enum AppInspectionParser {
+    static func parse(_ output: String, supportsCacheOnlyClear: Bool) -> AppInspection {
+        var versionName: String?
+        var versionCode: String?
+        var minSDK: String?
+        var targetSDK: String?
+        var isStopped = false
+        var isSuspended = false
+        var enabledState = "Default"
+        var inUserZero = false
+        var inRuntimePermissions = false
+        var permissions: [AppPermission] = []
+
+        for rawLine in output.split(separator: "\n") {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if versionName == nil, line.hasPrefix("versionName=") { versionName = value(after: "versionName=", in: line) }
+            if versionCode == nil, line.contains("versionCode=") {
+                versionCode = token("versionCode", in: line)
+                minSDK = token("minSdk", in: line)
+                targetSDK = token("targetSdk", in: line)
+            }
+            if line.hasPrefix("User 0:") {
+                inUserZero = true
+                inRuntimePermissions = false
+                isStopped = line.contains("stopped=true")
+                isSuspended = line.contains("suspended=true")
+                enabledState = switch token("enabled", in: line) {
+                case "1": "Enabled"
+                case "2", "3", "4": "Disabled"
+                default: "Default"
+                }
+                continue
+            }
+            if inUserZero, line.hasPrefix("User "), !line.hasPrefix("User 0:") { break }
+            if inUserZero, line == "runtime permissions:" { inRuntimePermissions = true; continue }
+            if inRuntimePermissions, line.hasPrefix("android.permission."), let separator = line.range(of: ": granted=") {
+                permissions.append(AppPermission(name: String(line[..<separator.lowerBound]), granted: line[separator.upperBound...].hasPrefix("true")))
+            }
+        }
+        return AppInspection(versionName: versionName, versionCode: versionCode, minSDK: minSDK, targetSDK: targetSDK, isStopped: isStopped, isSuspended: isSuspended, enabledState: enabledState, permissions: permissions.sorted { $0.shortName < $1.shortName }, supportsCacheOnlyClear: supportsCacheOnlyClear)
+    }
+
+    private static func token(_ name: String, in line: String) -> String? {
+        line.split(whereSeparator: \.isWhitespace).first { $0.hasPrefix("\(name)=") }.map { String($0.dropFirst(name.count + 1)) }
+    }
+
+    private static func value(after prefix: String, in line: String) -> String? {
+        String(line.dropFirst(prefix.count)).nilIfEmpty
+    }
+}
+
+struct ScreenCapture: Equatable, Sendable {
+    let data: Data
+    let width: Int
+    let height: Int
+    let capturedAt: Date
+}
+
+enum ScreenGeometry {
+    static func devicePoint(at location: CGPoint, in viewSize: CGSize, imageSize: CGSize) -> CGPoint? {
+        guard viewSize.width > 0, viewSize.height > 0, imageSize.width > 0, imageSize.height > 0 else { return nil }
+        let scale = min(viewSize.width / imageSize.width, viewSize.height / imageSize.height)
+        let rendered = CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
+        let origin = CGPoint(x: (viewSize.width - rendered.width) / 2, y: (viewSize.height - rendered.height) / 2)
+        guard location.x >= origin.x, location.y >= origin.y, location.x <= origin.x + rendered.width, location.y <= origin.y + rendered.height else { return nil }
+        return CGPoint(x: (location.x - origin.x) / scale, y: (location.y - origin.y) / scale)
+    }
+}
+
+struct MediaSessionInfo: Equatable, Sendable {
+    let packageName: String
+    let state: String
+    let title: String?
+}
+
+enum MediaSessionParser {
+    static func parse(_ output: String) -> MediaSessionInfo? {
+        let lines = output.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        guard let header = lines.first(where: { $0.hasPrefix("Media button session is ") }),
+              let package = header.dropFirst("Media button session is ".count).split(separator: "/").first.map(String.init) else { return nil }
+        var inSession = false
+        var state = "Idle"
+        var title: String?
+        for line in lines {
+            if line.hasPrefix("package=") {
+                if inSession { break }
+                inSession = line == "package=\(package)"
+            } else if inSession, line.contains("state=PlaybackState") {
+                if line.contains("PLAYING(3)") || line.contains("{state=3,") { state = "Playing" }
+                else if line.contains("PAUSED(2)") || line.contains("{state=2,") { state = "Paused" }
+                else if line.contains("BUFFERING(6)") || line.contains("{state=6,") { state = "Buffering" }
+            } else if inSession, let range = line.range(of: "description="), !line.contains("description=null") {
+                title = String(line[range.upperBound...].split(separator: ",", maxSplits: 1).first ?? "").nilIfEmpty
+            }
+        }
+        return MediaSessionInfo(packageName: package, state: state, title: title)
     }
 }
 
@@ -999,6 +1124,39 @@ struct ADBClient: Sendable {
         try await runStreaming(arguments) { _ in }
     }
 
+    func runData(_ arguments: [String]) async throws -> Data {
+        guard let binary = Self.binaryURL else { throw ADBError.binaryMissing }
+        return try await Task.detached(priority: .userInitiated) {
+            let process = Process()
+            let stdout = Pipe()
+            let stderr = Pipe()
+            let output = ProcessBuffer()
+            let errors = ProcessBuffer()
+            process.executableURL = binary
+            process.arguments = arguments
+            process.standardOutput = stdout
+            process.standardError = stderr
+            stdout.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                if data.isEmpty { handle.readabilityHandler = nil } else { output.append(data) }
+            }
+            stderr.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                if data.isEmpty { handle.readabilityHandler = nil } else { errors.append(data) }
+            }
+            try process.run()
+            process.waitUntilExit()
+            stdout.fileHandleForReading.readabilityHandler = nil
+            stderr.fileHandleForReading.readabilityHandler = nil
+            output.append(stdout.fileHandleForReading.readDataToEndOfFile())
+            errors.append(stderr.fileHandleForReading.readDataToEndOfFile())
+            guard process.terminationStatus == 0 else {
+                throw ADBError.commandFailed(errors.text.nilIfEmpty ?? "ADB returned no details.")
+            }
+            return output.snapshot
+        }.value
+    }
+
     func connect(_ serial: String) async throws -> String {
         do {
             return try await connectOnce(serial)
@@ -1329,6 +1487,12 @@ final class DeviceManager {
     var launchers: [DeviceLauncher] = []
     var currentLauncher: String?
     var isLoadingLaunchers = false
+    var screenCapture: ScreenCapture?
+    var isCapturingScreen = false
+    var screenCaptureError: String?
+    var appInspection: AppInspection?
+    var isLoadingInspection = false
+    var mediaSession: MediaSessionInfo?
 
     private let adb = ADBClient()
     private var previousCPU: [String: CPUTicks] = [:]
@@ -1620,6 +1784,99 @@ final class DeviceManager {
         } catch {
             report(error, operation: "Send \(name) to \(device.name)")
         }
+    }
+
+    func captureScreen() async {
+        guard let device = selectedDevice, device.adbState.isUsable, !isCapturingScreen else { return }
+        isCapturingScreen = true
+        defer { isCapturingScreen = false }
+        do {
+            let data = try await adb.runData(["-s", device.serial, "exec-out", "screencap", "-p"])
+            guard !data.isEmpty else {
+                throw ADBError.commandFailed("The device did not provide a screen image. Protected video, such as DRM playback, or this device's firmware may block capture. Remote controls still work.")
+            }
+            guard let bitmap = NSBitmapImageRep(data: data), bitmap.pixelsWide > 0, bitmap.pixelsHigh > 0 else {
+                throw ADBError.commandFailed("The device returned an unreadable screen image.")
+            }
+            guard selectedDevice?.id == device.id else { return }
+            screenCapture = ScreenCapture(data: data, width: bitmap.pixelsWide, height: bitmap.pixelsHigh, capturedAt: .now)
+            screenCaptureError = nil
+        } catch {
+            screenCaptureError = error.localizedDescription
+            statusMessage = "Screen capture failed"
+        }
+    }
+
+    func loadMediaSession() async {
+        guard let device = selectedDevice, device.adbState.isUsable else { mediaSession = nil; return }
+        do {
+            let output = try await adb.run(["-s", device.serial, "shell", "dumpsys media_session"])
+            guard selectedDevice?.id == device.id else { return }
+            mediaSession = MediaSessionParser.parse(output)
+        } catch { mediaSession = nil }
+    }
+
+    func tapScreen(x: Int, y: Int) async {
+        guard let device = selectedDevice, let capture = screenCapture, device.adbState.isUsable else { return }
+        let x = min(max(x, 0), capture.width - 1)
+        let y = min(max(y, 0), capture.height - 1)
+        do {
+            _ = try await adb.run(["-s", device.serial, "shell", "input tap \(x) \(y)"])
+            try? await Task.sleep(for: .milliseconds(180))
+            await captureScreen()
+        } catch { report(error, operation: "Tap device screen") }
+    }
+
+    func loadInspection(for app: DeviceApp) async {
+        guard let device = selectedDevice, device.adbState.isUsable, !isLoadingInspection else { return }
+        isLoadingInspection = true
+        appInspection = nil
+        defer { isLoadingInspection = false }
+        do {
+            async let detailsTask = adb.run(["-s", device.serial, "shell", "dumpsys package \(RemoteFiles.shellQuote(app.packageName))"])
+            async let helpTask = adb.run(["-s", device.serial, "shell", "pm help"])
+            let (details, help) = try await (detailsTask, helpTask)
+            guard selectedDevice?.id == device.id else { return }
+            appInspection = AppInspectionParser.parse(details, supportsCacheOnlyClear: help.contains("--cache-only"))
+            statusMessage = "Inspected \(app.displayName)"
+        } catch { report(error, operation: "Inspect \(app.displayName)") }
+    }
+
+    func setPermission(_ permission: AppPermission, granted: Bool, for app: DeviceApp) async {
+        guard let device = selectedDevice, device.adbState.isUsable else { return }
+        let verb = granted ? "Grant" : "Revoke"
+        let ownsActivity = beginActivity("\(verb) permission", detail: permission.shortName)
+        defer { endActivity(ownsActivity) }
+        do {
+            _ = try await adb.run(["-s", device.serial, "shell", "pm \(granted ? "grant" : "revoke") --user 0 \(RemoteFiles.shellQuote(app.packageName)) \(RemoteFiles.shellQuote(permission.name))"])
+            await loadInspection(for: app)
+            statusMessage = "\(granted ? "Granted" : "Revoked") \(permission.shortName)"
+        } catch { report(error, operation: "\(verb) \(permission.shortName)") }
+    }
+
+    func clearCache(for app: DeviceApp) async {
+        guard let device = selectedDevice, device.adbState.isUsable, appInspection?.supportsCacheOnlyClear == true else { return }
+        await clearPackage(app, command: "pm clear --user 0 --cache-only", title: "Clear cache")
+    }
+
+    func clearData(for app: DeviceApp) async {
+        guard selectedDevice?.adbState.isUsable == true else { return }
+        await clearPackage(app, command: "pm clear --user 0", title: "Clear app data")
+    }
+
+    private func clearPackage(_ app: DeviceApp, command: String, title: String) async {
+        guard let device = selectedDevice else { return }
+        let ownsActivity = beginActivity(title, detail: app.displayName)
+        defer { endActivity(ownsActivity) }
+        do {
+            let output = try await adb.run(["-s", device.serial, "shell", "\(command) \(RemoteFiles.shellQuote(app.packageName))"])
+            guard output.split(separator: "\n").contains(where: { $0.trimmingCharacters(in: .whitespacesAndNewlines) == "Success" }) else {
+                throw ADBError.commandFailed("Android did not confirm the operation.\n\nDevice response:\n\(output.nilIfEmpty ?? "No details returned.")")
+            }
+            await loadInspection(for: app)
+            _ = await loadStorage()
+            statusMessage = "\(title) completed for \(app.displayName)"
+        } catch { report(error, operation: "\(title) for \(app.displayName)") }
     }
 
     func install(_ url: URL, mode: InstallMode = .new) async {

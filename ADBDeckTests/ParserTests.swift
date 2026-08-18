@@ -257,6 +257,11 @@ final class ParserTests: XCTestCase {
         XCTAssertTrue(DeviceLauncher(component: components[2], name: "Fallback").isFallback)
     }
 
+    func testLauncherCompatibilityDetectsPlayProtectedBuilds() {
+        XCTAssertTrue(LauncherCompatibility.requiresGooglePlayLicense("com.pairip.licensecheck.LicenseActivity"))
+        XCTAssertFalse(LauncherCompatibility.requiresGooglePlayLicense("com.example.launcher.MainActivity"))
+    }
+
     func testAppInspectionScreenMappingAndMediaParsing() {
         let inspection = AppInspectionParser.parse("""
           versionCode=2400 minSdk=17 targetSdk=34

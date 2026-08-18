@@ -562,6 +562,18 @@ struct DeviceLauncher: Identifiable, Hashable, Sendable {
     }
 }
 
+struct LauncherRedirect: Equatable, Sendable {
+    let deviceID: String
+    let serial: String
+    let launcher: DeviceLauncher
+}
+
+enum LauncherCompatibility {
+    static func requiresGooglePlayLicense(_ packageDump: String) -> Bool {
+        packageDump.localizedCaseInsensitiveContains("com.pairip.licensecheck")
+    }
+}
+
 enum LauncherParser {
     private static let pattern = try! NSRegularExpression(pattern: #"([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+/[A-Za-z0-9_.$]+)"#)
     private static let knownNames = [
@@ -1590,6 +1602,7 @@ final class DeviceManager {
     var launchers: [DeviceLauncher] = []
     var currentLauncher: String?
     var isLoadingLaunchers = false
+    var launcherRedirect: LauncherRedirect?
     var screenCapture: ScreenCapture?
     var isCapturingScreen = false
     var screenCaptureError: String?
@@ -1600,6 +1613,7 @@ final class DeviceManager {
     private let adb = ADBClient()
     private var previousCPU: [String: CPUTicks] = [:]
     private var folderSizeRequestID = UUID()
+    private var launcherRedirectTask: Task<Void, Never>?
     private var loadedAppsDeviceID: String?
     private var loadedSystemAppsSetting = false
 
@@ -2420,6 +2434,72 @@ final class DeviceManager {
             transfer?.fraction = 1
             statusMessage = "\(launcher.name) is now the default launcher"
         } catch { report(error, operation: "Use \(launcher.name)") }
+    }
+
+    func enableFireTVLauncherRedirect(_ launcher: DeviceLauncher) async {
+        guard let device = selectedDevice, device.adbState.isUsable, device.kind == .fireTV,
+              launchers.contains(launcher), !launcher.isFallback else { return }
+        let ownsActivity = beginActivity("Preparing Home redirect", detail: launcher.name, fraction: 0.15)
+        defer { endActivity(ownsActivity) }
+        do {
+            let packageDump = try await adb.run(["-s", device.serial, "shell", "dumpsys package \(RemoteFiles.shellQuote(launcher.packageName))"])
+            if LauncherCompatibility.requiresGooglePlayLicense(packageDump) {
+                let vending = try await adb.run(["-s", device.serial, "shell", "pm list packages com.android.vending"])
+                guard vending.contains("package:com.android.vending") else {
+                    throw ADBError.commandFailed("\(launcher.name) requires Google Play licensing, but Fire OS has no Google Play licensing service. Forcing it as Home would leave the device on its license-error screen. Use a direct Fire TV-compatible launcher build instead.")
+                }
+            }
+            transfer?.fraction = 0.4
+            _ = try? await adb.run(["-s", device.serial, "shell", "cmd role add-role-holder --user 0 android.app.role.HOME \(RemoteFiles.shellQuote(launcher.packageName)) 0"])
+            _ = try? await adb.run(["-s", device.serial, "shell", "cmd package set-home-activity --user 0 \(RemoteFiles.shellQuote(launcher.component))"])
+            _ = try await adb.run(["-s", device.serial, "shell", "am start -n \(RemoteFiles.shellQuote(launcher.component))"])
+            transfer?.fraction = 0.8
+            try? await Task.sleep(for: .milliseconds(450))
+            let activity = try await adb.run(["-s", device.serial, "shell", "dumpsys activity activities"])
+            guard ActivityParser.foreground(activity) == launcher.packageName else {
+                throw ADBError.commandFailed("Fire OS could not open \(launcher.name). The original Fire TV Home remains enabled.")
+            }
+            launcherRedirectTask?.cancel()
+            launcherRedirect = LauncherRedirect(deviceID: device.id, serial: device.serial, launcher: launcher)
+            startLauncherRedirectMonitor()
+            transfer?.fraction = 1
+            statusMessage = "Forcing Home to \(launcher.name) while ADB Deck stays connected"
+        } catch { report(error, operation: "Force \(launcher.name) via Mac") }
+    }
+
+    func disableFireTVLauncherRedirect() async {
+        guard let redirect = launcherRedirect else { return }
+        launcherRedirectTask?.cancel()
+        launcherRedirectTask = nil
+        launcherRedirect = nil
+        _ = try? await adb.run(["-s", redirect.serial, "shell", "cmd role add-role-holder --user 0 android.app.role.HOME com.amazon.tv.launcher 0"])
+        _ = try? await adb.run(["-s", redirect.serial, "shell", "cmd package set-home-activity --user 0 com.amazon.tv.launcher/.ui.HomeActivity_vNext"])
+        _ = try? await adb.run(["-s", redirect.serial, "shell", "input keyevent KEYCODE_HOME"])
+        statusMessage = "Restored Fire TV Home"
+    }
+
+    private func startLauncherRedirectMonitor() {
+        launcherRedirectTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(1.25)) } catch { break }
+                await self?.redirectFireTVHomeIfNeeded()
+            }
+        }
+    }
+
+    private func redirectFireTVHomeIfNeeded() async {
+        guard let redirect = launcherRedirect else { return }
+        do {
+            let output = try await adb.run(["-s", redirect.serial, "shell", "dumpsys activity activities"])
+            guard let foreground = ActivityParser.foreground(output),
+                  foreground == "com.amazon.tv.launcher" || foreground == "com.amazon.firehomestarter" else { return }
+            _ = try await adb.run(["-s", redirect.serial, "shell", "am start -n \(RemoteFiles.shellQuote(redirect.launcher.component))"])
+        } catch {
+            launcherRedirectTask?.cancel()
+            launcherRedirectTask = nil
+            launcherRedirect = nil
+            statusMessage = "Home redirect stopped: ADB connection was lost"
+        }
     }
 
     func loadFiles(at path: String? = nil) async {

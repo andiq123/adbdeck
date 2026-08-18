@@ -33,6 +33,8 @@ struct ContentView: View {
     @State private var showRemoteInput = false
     @State private var showDeviceActivity = false
     @State private var showLaunchers = false
+    @State private var showTechnicalDetails = false
+    @State private var pendingLauncherRedirect: DeviceLauncher?
     @State private var remoteText = ""
     @State private var liveRemotePreview = true
     @State private var inspectedApp: DeviceApp?
@@ -270,12 +272,29 @@ struct ContentView: View {
                     }
 
                     if let technical = failure.technicalDetails {
-                        DisclosureGroup("Technical details") {
+                        Button {
+                            withAnimation(.smooth) { showTechnicalDetails.toggle() }
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "chevron.right")
+                                    .rotationEffect(.degrees(showTechnicalDetails ? 90 : 0))
+                                Text("Technical details").fontWeight(.semibold)
+                                Spacer()
+                                Text(showTechnicalDetails ? "Hide" : "Show")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.vertical, 10)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity)
+                        if showTechnicalDetails {
                             Text(technical)
                                 .font(.callout.monospaced())
                                 .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.top, 10)
+                                .transition(.opacity.combined(with: .move(edge: .top)))
                         }
                     }
                 }
@@ -292,7 +311,10 @@ struct ContentView: View {
                 .buttonStyle(.bordered)
                 .tint(.blue)
                 Spacer()
-                Button("Close") { manager.lastError = nil }
+                Button("Close") {
+                    showTechnicalDetails = false
+                    manager.lastError = nil
+                }
                     .buttonStyle(.borderedProminent)
                     .tint(.red)
                     .keyboardShortcut(.defaultAction)
@@ -554,7 +576,7 @@ struct ContentView: View {
             Text("Choose the app Android opens when Home is pressed. Only installed apps that advertise the HOME role are shown.")
                 .foregroundStyle(.secondary)
             if manager.selectedDevice?.kind == .fireTV {
-                Label("Fire OS may lock Fire TV Home. ADB Deck verifies every change and never disables Amazon system packages.", systemImage: "exclamationmark.shield.fill")
+                Label("Fire OS may lock its default Home. Force via Mac can redirect it while ADB Deck stays connected; Amazon system packages remain enabled.", systemImage: "exclamationmark.shield.fill")
                     .font(.callout)
                     .foregroundStyle(.orange)
                     .padding(12)
@@ -580,15 +602,26 @@ struct ContentView: View {
                                     Text(launcher.component).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1)
                                 }
                                 Spacer()
-                                if launcher.component == manager.currentLauncher {
+                                if manager.launcherRedirect?.launcher == launcher {
+                                    Button("Stop forcing") { Task { await manager.disableFireTVLauncherRedirect() } }
+                                        .buttonStyle(.bordered)
+                                        .tint(.orange)
+                                } else if launcher.component == manager.currentLauncher {
                                     Label("Default", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
                                 } else if launcher.isFallback {
                                     Text("Recovery fallback").font(.caption).foregroundStyle(.secondary)
                                 } else {
-                                    Button("Use") { Task { await manager.setDefaultLauncher(launcher) } }
-                                        .buttonStyle(.borderedProminent)
-                                        .tint(.green)
-                                        .disabled(manager.isWorking)
+                                    HStack(spacing: 8) {
+                                        Button("Use") { Task { await manager.setDefaultLauncher(launcher) } }
+                                            .buttonStyle(.borderedProminent)
+                                            .tint(.green)
+                                        if manager.selectedDevice?.kind == .fireTV {
+                                            Button("Force via Mac") { pendingLauncherRedirect = launcher }
+                                                .buttonStyle(.bordered)
+                                                .tint(.orange)
+                                        }
+                                    }
+                                    .disabled(manager.isWorking)
                                 }
                             }
                             .padding(12)
@@ -598,12 +631,26 @@ struct ContentView: View {
                 }
                 .frame(maxHeight: 360)
             }
-            Text("You can always select the original launcher again from this list.").font(.caption).foregroundStyle(.secondary)
+            Text(manager.launcherRedirect == nil ? "You can always select the original launcher again from this list." : "ADB Deck is actively redirecting Home. Stop forcing before quitting the app.")
+                .font(.caption)
+                .foregroundStyle(manager.launcherRedirect == nil ? Color.secondary : .orange)
         }
         .padding(24)
         .frame(width: 640)
         .frame(minHeight: 420)
         .task { await manager.loadLaunchers() }
+        .alert("Force launcher via this Mac?", isPresented: Binding(
+            get: { pendingLauncherRedirect != nil },
+            set: { if !$0 { pendingLauncherRedirect = nil } }
+        ), presenting: pendingLauncherRedirect) { launcher in
+            Button("Cancel", role: .cancel) { pendingLauncherRedirect = nil }
+            Button("Force via Mac") {
+                pendingLauncherRedirect = nil
+                Task { await manager.enableFireTVLauncherRedirect(launcher) }
+            }
+        } message: { launcher in
+            Text("ADB Deck will redirect Fire TV Home to \(launcher.name) while this Mac, ADB Deck, and wireless ADB remain connected. Fire TV Home stays enabled for recovery.")
+        }
     }
 
     private func activityRow(_ app: DeviceApp, isCurrent: Bool) -> some View {

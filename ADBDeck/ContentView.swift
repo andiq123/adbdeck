@@ -332,7 +332,7 @@ struct ContentView: View {
 
     private var remoteInputSheet: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .top) {
+            HStack {
                 Label(manager.selectedDevice.map { $0.kind == .television || $0.kind == .fireTV ? "TV Remote" : "Device Remote" } ?? "Device Remote", systemImage: "dot.radiowaves.left.and.right")
                     .font(.title2.bold())
                     .foregroundStyle(.teal)
@@ -341,6 +341,8 @@ struct ContentView: View {
                 Toggle("Live", isOn: $liveRemotePreview).toggleStyle(.switch).controlSize(.small)
                 Button { Task { await manager.captureScreen() } } label: { Label("Refresh screen", systemImage: "arrow.clockwise") }
                     .labelStyle(.iconOnly)
+                    .buttonStyle(.bordered)
+                    .buttonBorderShape(.circle)
                     .disabled(manager.isCapturingScreen)
                 ModalCloseButton { showRemoteInput = false }
             }
@@ -446,7 +448,7 @@ struct ContentView: View {
 
     private var deviceActivitySheet: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .top) {
+            HStack {
                 Label("Device activity", systemImage: "rectangle.stack.fill")
                     .font(.title2.bold())
                 Spacer()
@@ -455,6 +457,8 @@ struct ContentView: View {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
                 .labelStyle(.iconOnly)
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.circle)
                 .help("Refresh device activity")
                 .disabled(manager.isLoadingActivity || manager.isWorking)
                 ModalCloseButton { showDeviceActivity = false }
@@ -511,7 +515,7 @@ struct ContentView: View {
 
     private var launcherSheet: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .top) {
+            HStack {
                 Label("Default launcher", systemImage: "house.fill")
                     .font(.title2.bold())
                     .foregroundStyle(.green)
@@ -519,6 +523,8 @@ struct ContentView: View {
                 if manager.isLoadingLaunchers { ProgressView().controlSize(.small) }
                 Button { Task { await manager.loadLaunchers() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                     .labelStyle(.iconOnly)
+                    .buttonStyle(.bordered)
+                    .buttonBorderShape(.circle)
                     .disabled(manager.isLoadingLaunchers || manager.isWorking)
                 ModalCloseButton { showLaunchers = false }
             }
@@ -1299,7 +1305,7 @@ private struct AppInspectorSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .top, spacing: 14) {
+            HStack(spacing: 14) {
                 Image(systemName: app.symbol)
                     .font(.title2)
                     .foregroundStyle(.purple)
@@ -1313,16 +1319,18 @@ private struct AppInspectorSheet: View {
                 if manager.isLoadingInspection { ProgressView().controlSize(.small) }
                 Button { Task { await manager.loadInspection(for: app) } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                     .labelStyle(.iconOnly)
+                    .buttonStyle(.bordered)
+                    .buttonBorderShape(.circle)
                     .disabled(manager.isLoadingInspection || manager.isWorking)
                 ModalCloseButton { dismiss() }
             }
 
             if let inspection = manager.appInspection {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 145), spacing: 10)], spacing: 10) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 260), spacing: 10)], spacing: 10) {
                     inspectorFact("Version", inspection.versionName ?? "Unknown", detail: inspection.versionCode.map { "Code \($0)" }, color: .blue)
                     inspectorFact("Android support", inspection.minSDK.map { "API \($0)+" } ?? "Unknown", detail: inspection.targetSDK.map { "Targets API \($0)" }, color: .green)
                     inspectorFact("State", inspection.isSuspended ? "Suspended" : inspection.isStopped ? "Stopped" : "Ready", detail: inspection.enabledState, color: inspection.isSuspended ? .red : .orange)
-                    inspectorFact("Storage", app.storage.map { ByteCountFormatter.string(fromByteCount: $0.total, countStyle: .file) } ?? "Unavailable", detail: app.storage.map { "Data \(ByteCountFormatter.string(fromByteCount: $0.data, countStyle: .file)) · Cache \(ByteCountFormatter.string(fromByteCount: $0.cache, countStyle: .file))" }, color: .purple)
+                    inspectorFact("Storage", app.storage.map { byteCount($0.total) } ?? "Unavailable", detail: app.storage.map { "Data \(byteCount($0.data)) · Cache \(byteCount($0.cache))" }, color: .purple)
                 }
 
                 HStack(spacing: 10) {
@@ -1340,12 +1348,20 @@ private struct AppInspectorSheet: View {
                 HStack {
                     Text("Runtime permissions").font(.headline)
                     Spacer()
-                    Text("\(inspection.permissions.filter(\.granted).count) of \(inspection.permissions.count) granted")
-                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    if !inspection.permissions.isEmpty {
+                        Text("\(inspection.permissions.filter(\.granted).count) of \(inspection.permissions.count) granted")
+                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    }
                 }
                 if inspection.permissions.isEmpty {
-                    ContentUnavailableView("No runtime permissions", systemImage: "checkmark.shield", description: Text("Android reports no user-changeable permissions for this app."))
-                        .frame(minHeight: 120)
+                    VStack(spacing: 7) {
+                        Image(systemName: "checkmark.shield.fill").font(.title2).foregroundStyle(.green)
+                        Text("No runtime permissions").font(.headline)
+                        Text("Android reports no user-changeable permissions for this app.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 105)
+                    .background(.green.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 0) {
@@ -1381,7 +1397,6 @@ private struct AppInspectorSheet: View {
         }
         .padding(24)
         .frame(width: 700)
-        .frame(minHeight: 560)
         .task { await manager.loadInspection(for: app) }
         .alert("Clear all app data?", isPresented: $confirmClearData) {
             Button("Cancel", role: .cancel) {}
@@ -1401,6 +1416,10 @@ private struct AppInspectorSheet: View {
         .padding(11)
         .background(color.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
     }
+
+    private func byteCount(_ value: Int64) -> String {
+        value == 0 ? "0 KB" : ByteCountFormatter.string(fromByteCount: value, countStyle: .file)
+    }
 }
 
 private struct ModalCloseButton: View {
@@ -1411,7 +1430,6 @@ private struct ModalCloseButton: View {
             .labelStyle(.iconOnly)
             .buttonStyle(.borderedProminent)
             .buttonBorderShape(.circle)
-            .controlSize(.small)
             .tint(.red)
             .keyboardShortcut(.cancelAction)
             .help("Close")

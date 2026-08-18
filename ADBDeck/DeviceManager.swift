@@ -1082,9 +1082,10 @@ enum AppBackup {
 
     static func apkURLs(for manifest: Manifest, in directory: URL) throws -> [URL] {
         guard manifest.formatVersion == 1, APKManifest.validPackageName(manifest.packageName), !manifest.files.isEmpty,
-              Set(manifest.files).count == manifest.files.count else {
+              manifest.files.count <= 256, Set(manifest.files).count == manifest.files.count else {
             throw ADBError.commandFailed("This ADB Deck app package has an invalid manifest.")
         }
+        var totalSize = 0
         return try manifest.files.map { name in
             guard name == URL(fileURLWithPath: name).lastPathComponent,
                   URL(fileURLWithPath: name).pathExtension.lowercased() == "apk" else {
@@ -1095,8 +1096,69 @@ enum AppBackup {
             guard values.isRegularFile == true, values.isSymbolicLink != true, (values.fileSize ?? 0) > 0 else {
                 throw ADBError.commandFailed("The app package is missing \(name).")
             }
+            totalSize += values.fileSize ?? 0
+            guard totalSize <= 4 * 1024 * 1024 * 1024 else {
+                throw ADBError.commandFailed("The app package is unexpectedly large.")
+            }
             return url
         }
+    }
+}
+
+enum APKM {
+    private static let ABIs = ["arm64_v8a", "armeabi_v7a", "x86_64", "x86"]
+    private static let densities = ["ldpi": 120, "mdpi": 160, "tvdpi": 213, "hdpi": 240, "xhdpi": 320, "xxhdpi": 480, "xxxhdpi": 640]
+
+    struct Info: Decodable {
+        let appName: String?
+
+        enum CodingKeys: String, CodingKey { case appName = "app_name" }
+    }
+
+    static func apkNames(in directory: URL) throws -> [String] {
+        let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+            .filter { URL(fileURLWithPath: $0).pathExtension.lowercased() == "apk" }
+            .sorted {
+                if $0 == "base.apk" { return true }
+                if $1 == "base.apk" { return false }
+                return $0.localizedStandardCompare($1) == .orderedAscending
+            }
+        guard names.contains("base.apk") else {
+            throw ADBError.commandFailed("This APKM package has no base.apk component.")
+        }
+        return names
+    }
+
+    static func displayName(in directory: URL, fallback: String) -> String {
+        let url = directory.appendingPathComponent("info.json")
+        return (try? JSONDecoder().decode(Info.self, from: Data(contentsOf: url)).appName)?.nilIfEmpty ?? fallback
+    }
+
+    static func selectedFiles(from files: [String], supportedABIs: String?, density: Int?) throws -> [String] {
+        let abiFiles = files.filter { name in ABIs.contains { name.contains("split_config.\($0).apk") } }
+        var excluded = Set(abiFiles)
+        if !abiFiles.isEmpty {
+            let supported = supportedABIs?.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "-", with: "_") } ?? []
+            guard let token = supported.first(where: { abi in abiFiles.contains { $0.contains("split_config.\(abi).apk") } }),
+                  let match = abiFiles.first(where: { $0.contains("split_config.\(token).apk") }) else {
+                throw ADBError.commandFailed("This APKM package does not include an APK for the device’s processor architecture (\(supportedABIs ?? "unknown")).")
+            }
+            excluded.remove(match)
+        }
+
+        let densityFiles = files.compactMap { name -> (String, Int)? in
+            guard let match = densities.first(where: { name.contains("split_config.\($0.key).apk") }) else { return nil }
+            return (name, match.value)
+        }
+        excluded.formUnion(densityFiles.map(\.0))
+        if let chosen = densityFiles.min(by: { abs($0.1 - (density ?? 320)) < abs($1.1 - (density ?? 320)) }) {
+            excluded.remove(chosen.0)
+        }
+        return files.filter { !excluded.contains($0) }
+    }
+
+    static func density(from output: String) -> Int? {
+        output.split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }.last
     }
 }
 
@@ -1927,8 +1989,8 @@ final class DeviceManager {
         }
         lastError = nil
         let fileExtension = url.pathExtension.lowercased()
-        guard ["apk", "adbdeck"].contains(fileExtension) else {
-            report(ADBError.commandFailed("Choose an .apk or .adbdeck app package."), operation: "Open \(url.lastPathComponent)")
+        guard ["apk", "apkm", "adbdeck"].contains(fileExtension) else {
+            report(ADBError.commandFailed("Choose an .apk, .apkm, or .adbdeck app package."), operation: "Open \(url.lastPathComponent)")
             return
         }
         guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]),
@@ -1963,8 +2025,8 @@ final class DeviceManager {
             return
         }
         endActivity(ownsActivity)
-        if fileExtension == "adbdeck" {
-            await installBackup(url, packageName: packageName, removedExistingApp: removedExistingApp, on: device)
+        if fileExtension == "adbdeck" || fileExtension == "apkm" {
+            await installSplitPackage(url, packageName: packageName, removedExistingApp: removedExistingApp, on: device)
             return
         }
         isWorking = true
@@ -1995,14 +2057,27 @@ final class DeviceManager {
         if archive.pathExtension.lowercased() == "adbdeck" {
             return try await validatedBackup(at: archive)
         }
+        if archive.pathExtension.lowercased() == "apkm" {
+            return try await validatedAPKM(at: archive)
+        }
         return try APKManifest.metadata(in: await archiveEntry("AndroidManifest.xml", in: archive))
     }
 
-    private func validatedBackup(at archive: URL) async throws -> APKMetadata {
+    private func validateArchivePaths(_ archive: URL) async throws {
         let entries = try await runLocalOutput("/usr/bin/unzip", ["-Z1", archive.path])
-        guard entries.split(separator: "\n").allSatisfy({ entry in
+        let paths = entries.split(separator: "\n")
+        guard paths.count <= 512, paths.allSatisfy({ entry in
             !entry.hasPrefix("/") && !entry.split(separator: "/", omittingEmptySubsequences: false).contains("..")
-        }) else { throw ADBError.commandFailed("The ADB Deck package contains an unsafe file path.") }
+        }) else { throw ADBError.commandFailed("The app package contains an unsafe file path.") }
+        let summary = try await runLocalOutput("/usr/bin/unzip", ["-Z", "-t", archive.path]).split(separator: " ")
+        if let marker = summary.firstIndex(where: { $0.hasPrefix("uncompressed") }), marker >= 2,
+           let bytes = Int64(summary[marker - 2]), bytes > 4 * 1024 * 1024 * 1024 {
+            throw ADBError.commandFailed("The app package expands beyond the 4 GB safety limit.")
+        }
+    }
+
+    private func validatedBackup(at archive: URL) async throws -> APKMetadata {
+        try await validateArchivePaths(archive)
 
         let workspace = FileManager.default.temporaryDirectory.appendingPathComponent("ADBDeck-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
@@ -2029,6 +2104,26 @@ final class DeviceManager {
         }
         guard let baseMetadata else { throw ADBError.commandFailed("The app package has no readable APK components.") }
         return baseMetadata
+    }
+
+    private func validatedAPKM(at archive: URL) async throws -> APKMetadata {
+        try await validateArchivePaths(archive)
+        let workspace = FileManager.default.temporaryDirectory.appendingPathComponent("ADBDeck-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspace) }
+        try await runLocal("/usr/bin/ditto", ["-x", "-k", archive.path, workspace.path])
+        let names = try APKM.apkNames(in: workspace)
+        let base = workspace.appendingPathComponent("base.apk")
+        let metadata = try APKManifest.metadata(in: await archiveEntry("AndroidManifest.xml", in: base))
+        let manifest = AppBackup.Manifest(formatVersion: 1, packageName: metadata.packageName,
+                                          displayName: APKM.displayName(in: workspace, fallback: metadata.packageName), files: names)
+        for apk in try AppBackup.apkURLs(for: manifest, in: workspace) {
+            let component = try APKManifest.metadata(in: await archiveEntry("AndroidManifest.xml", in: apk))
+            guard component.packageName == metadata.packageName else {
+                throw ADBError.commandFailed("\(apk.lastPathComponent) belongs to a different Android app.")
+            }
+        }
+        return metadata
     }
 
     private func archiveEntry(_ entry: String, in archive: URL) async throws -> Data {
@@ -2110,7 +2205,7 @@ final class DeviceManager {
         }
     }
 
-    private func installBackup(_ archive: URL, packageName: String, removedExistingApp: Bool, on device: AndroidDevice) async {
+    private func installSplitPackage(_ archive: URL, packageName: String, removedExistingApp: Bool, on device: AndroidDevice) async {
         isWorking = true
         let workspace = FileManager.default.temporaryDirectory.appendingPathComponent("ADBDeck-\(UUID().uuidString)", isDirectory: true)
         transfer = TransferStatus(title: "Installing \(archive.deletingPathExtension().lastPathComponent)", detail: "Opening app package", fraction: 0.05)
@@ -2118,13 +2213,29 @@ final class DeviceManager {
         do {
             try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: workspace) }
+            try await validateArchivePaths(archive)
             try await runLocal("/usr/bin/ditto", ["-x", "-k", archive.path, workspace.path])
-            guard let manifestURL = try FileManager.default.contentsOfDirectory(at: workspace, includingPropertiesForKeys: nil)
-                .first(where: { $0.lastPathComponent == AppBackup.manifestName }) else {
-                throw ADBError.commandFailed("This file is not an ADB Deck app package.")
+            let isAPKM = archive.pathExtension.lowercased() == "apkm"
+            let manifest: AppBackup.Manifest
+            if isAPKM {
+                let names = try APKM.apkNames(in: workspace)
+                manifest = AppBackup.Manifest(formatVersion: 1, packageName: packageName,
+                                              displayName: APKM.displayName(in: workspace, fallback: packageName), files: names)
+            } else {
+                let manifestURL = workspace.appendingPathComponent(AppBackup.manifestName)
+                guard FileManager.default.isReadableFile(atPath: manifestURL.path) else {
+                    throw ADBError.commandFailed("This file is not an ADB Deck app package.")
+                }
+                manifest = try JSONDecoder().decode(AppBackup.Manifest.self, from: Data(contentsOf: manifestURL))
             }
-            let manifest = try JSONDecoder().decode(AppBackup.Manifest.self, from: Data(contentsOf: manifestURL))
-            let apks = try AppBackup.apkURLs(for: manifest, in: workspace)
+            var apks = try AppBackup.apkURLs(for: manifest, in: workspace)
+            if isAPKM {
+                let densityOutput = try? await adb.run(["-s", device.serial, "shell", "wm", "density"])
+                let selected = try APKM.selectedFiles(from: apks.map(\.lastPathComponent), supportedABIs: device.supportedABIs,
+                                                      density: densityOutput.flatMap(APKM.density))
+                let selectedNames = Set(selected)
+                apks = apks.filter { selectedNames.contains($0.lastPathComponent) }
+            }
             transfer = TransferStatus(title: "Installing \(manifest.displayName)", detail: "Sending \(apks.count) APK components to \(device.name)", fraction: 0.2)
             let output = try await adb.runStreaming(["-s", device.serial, "install-multiple", "-r"] + apks.map(\.path), progress: progressHandler(from: 0.2, to: 1))
             try InstallOutput.requireSuccess(output, removedExistingApp: removedExistingApp)

@@ -145,6 +145,16 @@ final class ParserTests: XCTestCase {
         XCTAssertEqual(AppBackup.safeName("TV/App: Demo"), "TV-App- Demo")
     }
 
+    func testAPKMSelectsCompatibleArchitectureAndDensity() throws {
+        let files = ["base.apk", "split_config.arm64_v8a.apk", "split_config.armeabi_v7a.apk", "split_config.en.apk", "split_config.hdpi.apk", "split_config.xhdpi.apk"]
+        XCTAssertEqual(try APKM.selectedFiles(from: files, supportedABIs: "armeabi-v7a,armeabi", density: 300),
+                       ["base.apk", "split_config.armeabi_v7a.apk", "split_config.en.apk", "split_config.xhdpi.apk"])
+        XCTAssertEqual(try APKM.selectedFiles(from: files, supportedABIs: "arm64-v8a,armeabi-v7a", density: 240),
+                       ["base.apk", "split_config.arm64_v8a.apk", "split_config.en.apk", "split_config.hdpi.apk"])
+        XCTAssertThrowsError(try APKM.selectedFiles(from: files, supportedABIs: "x86", density: 320))
+        XCTAssertEqual(APKM.density(from: "Physical density: 240\nOverride density: 320"), 320)
+    }
+
     func testAPKManifestPackageValidation() throws {
         let manifest = Data(base64Encoded: "AwAIAJQAAAABABwAVAAAAAMAAAAAAAAAAAEAACgAAAAAAAAAAAAAAAsAAAAVAAAACAhtYW5pZmVzdAAHB3BhY2thZ2UAEhJjb20uZXhhbXBsZS5wbGF5ZXIAAAACARAAOAAAAAEAAAD//////////wAAAAAUABQAAQAAAAAAAAD/////AQAAAAIAAAAIAAADAgAAAA==")!
         XCTAssertEqual(try APKManifest.packageName(in: manifest), "com.example.player")

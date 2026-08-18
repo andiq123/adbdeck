@@ -135,7 +135,11 @@ struct ContentView: View {
                 do { try await Task.sleep(for: .seconds(3)) } catch { break }
             }
         }
-        .fileImporter(isPresented: $isImporting, allowedContentTypes: [UTType(filenameExtension: "apk") ?? .data, UTType(filenameExtension: "adbdeck") ?? .archive]) { result in
+        .fileImporter(isPresented: $isImporting, allowedContentTypes: [
+            UTType(filenameExtension: "apk") ?? .data,
+            UTType(filenameExtension: "apkm") ?? .archive,
+            UTType(filenameExtension: "adbdeck") ?? .archive
+        ]) { result in
             guard case .success(let url) = result else { return }
             Task { await manager.install(url) }
         }

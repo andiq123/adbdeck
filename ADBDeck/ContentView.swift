@@ -271,6 +271,7 @@ struct ContentView: View {
                 Spacer()
                 Button("Close") { manager.lastError = nil }
                     .buttonStyle(.borderedProminent)
+                    .tint(.red)
                     .keyboardShortcut(.defaultAction)
             }
         }
@@ -331,7 +332,7 @@ struct ContentView: View {
 
     private var remoteInputSheet: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack {
+            HStack(alignment: .top) {
                 Label(manager.selectedDevice.map { $0.kind == .television || $0.kind == .fireTV ? "TV Remote" : "Device Remote" } ?? "Device Remote", systemImage: "dot.radiowaves.left.and.right")
                     .font(.title2.bold())
                     .foregroundStyle(.teal)
@@ -341,6 +342,7 @@ struct ContentView: View {
                 Button { Task { await manager.captureScreen() } } label: { Label("Refresh screen", systemImage: "arrow.clockwise") }
                     .labelStyle(.iconOnly)
                     .disabled(manager.isCapturingScreen)
+                ModalCloseButton { showRemoteInput = false }
             }
             if let media = manager.mediaSession {
                 HStack(spacing: 8) {
@@ -377,7 +379,6 @@ struct ContentView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("Done") { showRemoteInput = false }
                 Button("Send") { sendRemoteText() }
                     .buttonStyle(.borderedProminent)
                     .disabled(remoteText.isEmpty || manager.isWorking)
@@ -445,7 +446,7 @@ struct ContentView: View {
 
     private var deviceActivitySheet: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack {
+            HStack(alignment: .top) {
                 Label("Device activity", systemImage: "rectangle.stack.fill")
                     .font(.title2.bold())
                 Spacer()
@@ -456,6 +457,7 @@ struct ContentView: View {
                 .labelStyle(.iconOnly)
                 .help("Refresh device activity")
                 .disabled(manager.isLoadingActivity || manager.isWorking)
+                ModalCloseButton { showDeviceActivity = false }
             }
 
             Text("Current app")
@@ -497,14 +499,9 @@ struct ContentView: View {
                 .frame(maxHeight: 280)
             }
 
-            HStack {
-                Text("Background returns to Home. Force Quit stops the app until it is opened again.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button("Done") { showDeviceActivity = false }
-                    .keyboardShortcut(.defaultAction)
-            }
+            Text("Background returns to Home. Force Quit stops the app until it is opened again.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
         .padding(24)
         .frame(width: 560)
@@ -514,7 +511,7 @@ struct ContentView: View {
 
     private var launcherSheet: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack {
+            HStack(alignment: .top) {
                 Label("Default launcher", systemImage: "house.fill")
                     .font(.title2.bold())
                     .foregroundStyle(.green)
@@ -523,6 +520,7 @@ struct ContentView: View {
                 Button { Task { await manager.loadLaunchers() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                     .labelStyle(.iconOnly)
                     .disabled(manager.isLoadingLaunchers || manager.isWorking)
+                ModalCloseButton { showLaunchers = false }
             }
             Text("Choose the app Android opens when Home is pressed. Only installed apps that advertise the HOME role are shown.")
                 .foregroundStyle(.secondary)
@@ -571,11 +569,7 @@ struct ContentView: View {
                 }
                 .frame(maxHeight: 360)
             }
-            HStack {
-                Text("You can always select the original launcher again from this list.").font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Button("Done") { showLaunchers = false }.keyboardShortcut(.defaultAction)
-            }
+            Text("You can always select the original launcher again from this list.").font(.caption).foregroundStyle(.secondary)
         }
         .padding(24)
         .frame(width: 640)
@@ -1305,7 +1299,7 @@ private struct AppInspectorSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 14) {
+            HStack(alignment: .top, spacing: 14) {
                 Image(systemName: app.symbol)
                     .font(.title2)
                     .foregroundStyle(.purple)
@@ -1320,10 +1314,7 @@ private struct AppInspectorSheet: View {
                 Button { Task { await manager.loadInspection(for: app) } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                     .labelStyle(.iconOnly)
                     .disabled(manager.isLoadingInspection || manager.isWorking)
-                Button("Close", systemImage: "xmark") { dismiss() }
-                    .labelStyle(.iconOnly)
-                    .keyboardShortcut(.cancelAction)
-                    .help("Close inspector")
+                ModalCloseButton { dismiss() }
             }
 
             if let inspection = manager.appInspection {
@@ -1336,7 +1327,7 @@ private struct AppInspectorSheet: View {
 
                 HStack(spacing: 10) {
                     Button { Task { await manager.launch(app) } } label: { Label("Open", systemImage: "play.fill") }.tint(.green)
-                    Button { Task { await manager.forceQuit(app) } } label: { Label("Force Quit", systemImage: "xmark.circle.fill") }.tint(.orange)
+                    Button(role: .destructive) { Task { await manager.forceQuit(app) } } label: { Label("Force Quit", systemImage: "xmark.circle.fill") }.tint(.red)
                     Spacer()
                     Button { Task { await manager.clearCache(for: app) } } label: { Label("Clear Cache", systemImage: "eraser.fill") }
                         .disabled(!inspection.supportsCacheOnlyClear || manager.isWorking)
@@ -1409,6 +1400,21 @@ private struct AppInspectorSheet: View {
         .frame(maxWidth: .infinity, minHeight: 62, alignment: .topLeading)
         .padding(11)
         .background(color.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+private struct ModalCloseButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button("Close", systemImage: "xmark", action: action)
+            .labelStyle(.iconOnly)
+            .buttonStyle(.borderedProminent)
+            .buttonBorderShape(.circle)
+            .controlSize(.small)
+            .tint(.red)
+            .keyboardShortcut(.cancelAction)
+            .help("Close")
     }
 }
 

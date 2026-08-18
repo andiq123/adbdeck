@@ -89,8 +89,22 @@ struct AndroidDevice: Identifiable, Hashable, Sendable {
     var adbState: ADBState
     var isAndroidLikely: Bool
     var hasCast: Bool
+    var supportedABIs: String? = nil
+    var androidVersion: String? = nil
+    var apiLevel: String? = nil
 
     var serial: String { "\(id):\(adbPort)" }
+
+    var recommendedAPKArchitecture: String? {
+        guard let primary = supportedABIs?.split(separator: ",").first.map(String.init) else { return nil }
+        return switch primary {
+        case "arm64-v8a": "ARM64 · arm64-v8a (64-bit)"
+        case "armeabi-v7a": "ARMv7 · armeabi-v7a (32-bit)"
+        case "x86_64": "Intel · x86_64 (64-bit)"
+        case "x86": "Intel · x86 (32-bit)"
+        default: primary
+        }
+    }
 
     var subtitle: String {
         let values = [manufacturer, model].filter { !$0.isEmpty && $0 != "Unknown" }
@@ -493,6 +507,25 @@ struct OperationFailure: Identifiable, Equatable {
     let id = UUID()
     let operation: String
     let details: String
+    let device: AndroidDevice?
+
+    var summary: String {
+        splitDetails.summary
+    }
+
+    var technicalDetails: String? {
+        splitDetails.technical
+    }
+
+    private var splitDetails: (summary: String, technical: String?) {
+        let marker = "\n\nDevice response:\n"
+        if let range = details.range(of: marker) {
+            return (String(details[..<range.lowerBound]), String(details[range.upperBound...]).nilIfEmpty)
+        }
+        let parts = details.components(separatedBy: "\n\n")
+        guard parts.count > 1 else { return (details, nil) }
+        return (parts[0], parts.dropFirst().joined(separator: "\n\n").nilIfEmpty)
+    }
 }
 
 struct OptimizationResult: Identifiable, Equatable {
@@ -1796,12 +1829,15 @@ final class DeviceManager {
             }
             device.adbState = .connected
             device.isAndroidLikely = true
-            let props = try await adb.run(["-s", serial, "shell", "printf '%s|%s|%s' \"$(getprop ro.product.manufacturer)\" \"$(getprop ro.product.model)\" \"$(getprop ro.product.device)\""])
+            let props = try await adb.run(["-s", serial, "shell", "printf '%s|%s|%s|%s|%s|%s' \"$(getprop ro.product.manufacturer)\" \"$(getprop ro.product.model)\" \"$(getprop ro.product.device)\" \"$(getprop ro.product.cpu.abilist)\" \"$(getprop ro.build.version.release)\" \"$(getprop ro.build.version.sdk)\""])
             let parts = props.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
-            if parts.count == 3 {
+            if parts.count == 6 {
                 device.manufacturer = parts[0].isEmpty ? device.manufacturer : parts[0]
                 device.model = parts[1].isEmpty ? device.model : parts[1]
                 device.name = parts[1].isEmpty ? device.name : parts[1]
+                device.supportedABIs = parts[3].nilIfEmpty
+                device.androidVersion = parts[4].nilIfEmpty
+                device.apiLevel = parts[5].nilIfEmpty
                 rememberIdentity(device)
             }
         } catch {
@@ -1812,7 +1848,7 @@ final class DeviceManager {
 
     private func report(_ error: Error, operation: String) {
         let details = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
-        lastError = OperationFailure(operation: operation, details: details.isEmpty ? "The operation failed without an error message." : details)
+        lastError = OperationFailure(operation: operation, details: details.isEmpty ? "The operation failed without an error message." : details, device: selectedDevice)
         statusMessage = "\(operation) failed"
     }
 

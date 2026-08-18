@@ -192,30 +192,68 @@ struct ContentView: View {
     }
 
     private func failureSheet(_ failure: OperationFailure) -> some View {
-            VStack(alignment: .leading, spacing: 16) {
-                Label("\(failure.operation) failed", systemImage: "exclamationmark.triangle.fill")
-                    .font(.title2.bold())
-                    .foregroundStyle(.red)
-                ScrollView {
-                    Text(failure.details)
-                        .font(.callout.monospaced())
+        VStack(alignment: .leading, spacing: 18) {
+            Label("\(failure.operation) failed", systemImage: "exclamationmark.triangle.fill")
+                .font(.title2.bold())
+                .foregroundStyle(.red)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(failure.summary)
+                        .font(.body)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(12)
-                }
-                .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
-                HStack {
-                    Button("Copy Details") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString("\(failure.operation) failed\n\n\(failure.details)", forType: .string)
+
+                    if let device = failure.device {
+                        GroupBox("Target device") {
+                            VStack(spacing: 9) {
+                                LabeledContent("Device", value: "\(device.manufacturer) \(device.model)")
+                                if let version = device.androidVersion {
+                                    LabeledContent("Android", value: version + (device.apiLevel.map { " · API \($0)" } ?? ""))
+                                }
+                                LabeledContent("Choose APK", value: device.recommendedAPKArchitecture ?? "Architecture not reported")
+                                if let abis = device.supportedABIs {
+                                    LabeledContent("Supported ABIs", value: abis)
+                                }
+                                LabeledContent("Connection", value: device.serial)
+                            }
+                            .textSelection(.enabled)
+                            .padding(6)
+                        }
                     }
-                    Spacer()
-                    Button("Close") { manager.lastError = nil }
-                        .keyboardShortcut(.defaultAction)
+
+                    if let technical = failure.technicalDetails {
+                        DisclosureGroup("Technical details") {
+                            Text(technical)
+                                .font(.callout.monospaced())
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.top, 10)
+                        }
+                    }
                 }
+                .padding(14)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
             }
-            .padding(24)
-            .frame(minWidth: 620, minHeight: 360)
+            HStack {
+                Button("Copy Details") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(failureCopyText(failure), forType: .string)
+                }
+                Spacer()
+                Button("Close") { manager.lastError = nil }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(minWidth: 660, minHeight: 440)
+    }
+
+    private func failureCopyText(_ failure: OperationFailure) -> String {
+        var text = "\(failure.operation) failed\n\n\(failure.details)"
+        if let device = failure.device {
+            text += "\n\nTarget device:\n\(device.manufacturer) \(device.model)\nAndroid: \(device.androidVersion ?? "Unknown") · API \(device.apiLevel ?? "Unknown")\nChoose APK: \(device.recommendedAPKArchitecture ?? "Unknown")\nSupported ABIs: \(device.supportedABIs ?? "Unknown")\nConnection: \(device.serial)"
+        }
+        return text
     }
 
     private var addDeviceSheet: some View {
@@ -828,6 +866,20 @@ private struct DeviceHeader: View {
                 }
                 .font(.caption.monospaced())
                 .foregroundStyle(.secondary)
+                if device.androidVersion != nil || device.recommendedAPKArchitecture != nil {
+                    HStack(spacing: 8) {
+                        if let version = device.androidVersion {
+                            Label("Android \(version)" + (device.apiLevel.map { " · API \($0)" } ?? ""), systemImage: "checkmark.seal")
+                        }
+                        if let architecture = device.recommendedAPKArchitecture {
+                            Label(architecture, systemImage: "cpu")
+                                .help("Supported ABIs: \(device.supportedABIs ?? architecture)")
+                        }
+                    }
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 2)
+                }
             }
             Spacer()
             Button(action: connect) {
@@ -845,7 +897,7 @@ private struct DeviceHeader: View {
             .tint(device.adbState == .connected ? .green : .accentColor)
         }
         .padding(22)
-        .frame(height: 112)
+        .frame(height: 132)
         .background(.regularMaterial)
     }
 }

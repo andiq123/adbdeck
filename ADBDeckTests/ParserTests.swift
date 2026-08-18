@@ -204,4 +204,12 @@ final class ParserTests: XCTestCase {
         XCTAssertNil(ActivityParser.foreground("mResumedActivity: null"))
     }
 
+    func testDeviceArchitectureRecommendationAndErrorFormatting() {
+        let device = AndroidDevice(id: "192.168.1.50", name: "Fire TV", manufacturer: "Amazon", model: "AFTKRT", adbState: .connected, isAndroidLikely: true, hasCast: false, supportedABIs: "armeabi-v7a,armeabi", androidVersion: "11", apiLevel: "30")
+        XCTAssertEqual(device.recommendedAPKArchitecture, "ARMv7 · armeabi-v7a (32-bit)")
+        let failure = OperationFailure(operation: "Install", details: "This app does not support the device architecture.\n\nDevice response:\nINSTALL_FAILED_NO_MATCHING_ABIS", device: device)
+        XCTAssertEqual(failure.summary, "This app does not support the device architecture.")
+        XCTAssertEqual(failure.technicalDetails, "INSTALL_FAILED_NO_MATCHING_ABIS")
+    }
+
 }

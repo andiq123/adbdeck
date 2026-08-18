@@ -607,7 +607,7 @@ struct ContentView: View {
                                 } else {
                                     HStack(spacing: 8) {
                                         if manager.selectedDevice?.kind == .fireTV, !launcher.packageName.hasPrefix("com.amazon.") {
-                                            Toggle("Use persistently", isOn: Binding(
+                                            Toggle(manager.launcherOperationComponent == launcher.component ? "Updating…" : "Use persistently", isOn: Binding(
                                                 get: { manager.launcherRedirect?.launcher == launcher },
                                                 set: { enabled in
                                                     if enabled { pendingLauncherRedirect = launcher }
@@ -616,6 +616,9 @@ struct ContentView: View {
                                             ))
                                             .toggleStyle(.switch)
                                             .tint(.orange)
+                                            if manager.launcherOperationComponent == launcher.component {
+                                                ProgressView().controlSize(.small)
+                                            }
                                         } else if launcher.component == manager.currentLauncher {
                                             Label("Default", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
                                         } else {
@@ -643,6 +646,15 @@ struct ContentView: View {
         .padding(24)
         .frame(width: 640)
         .frame(minHeight: 420)
+        .overlay(alignment: .top) {
+            if let transfer = manager.transfer {
+                TransferBanner(transfer: transfer)
+                    .frame(maxWidth: 560)
+                    .padding(16)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.smooth(duration: 0.25), value: manager.transfer)
         .task { await manager.loadLaunchers() }
         .alert("Make this Fire TV Home persistent?", isPresented: Binding(
             get: { pendingLauncherRedirect != nil },

@@ -263,6 +263,7 @@ final class ParserTests: XCTestCase {
     }
 
     func testFireTVHelperPreservesOtherAccessibilityServices() {
+        XCTAssertEqual(FireTVHomeHelper.service, "com.andi.adbdeck.helper/com.andi.adbdeck.helper.HomeRedirectService")
         let existing = "com.example.reader/.Service:com.example.remote/.Service"
         let enabled = FireTVHomeHelper.accessibilityServices(existing, enabling: true)
         XCTAssertTrue(enabled.contains(existing))

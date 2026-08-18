@@ -576,7 +576,7 @@ enum LauncherCompatibility {
 
 enum FireTVHomeHelper {
     static let packageName = "com.andi.adbdeck.helper"
-    static let service = "\(packageName)/.HomeRedirectService"
+    static let service = "\(packageName)/\(packageName).HomeRedirectService"
     static let enabledSetting = "adbdeck_launcher_enabled"
     static let componentSetting = "adbdeck_launcher_component"
 
@@ -1617,6 +1617,7 @@ final class DeviceManager {
     var currentLauncher: String?
     var isLoadingLaunchers = false
     var launcherRedirect: LauncherRedirect?
+    var launcherOperationComponent: String?
     var screenCapture: ScreenCapture?
     var isCapturingScreen = false
     var screenCaptureError: String?
@@ -2453,8 +2454,12 @@ final class DeviceManager {
     func enableFireTVLauncherRedirect(_ launcher: DeviceLauncher) async {
         guard let device = selectedDevice, device.adbState.isUsable, device.kind == .fireTV,
               launchers.contains(launcher), !launcher.isFallback else { return }
+        launcherOperationComponent = launcher.component
         let ownsActivity = beginActivity("Enabling persistent Home", detail: launcher.name, fraction: 0.1)
-        defer { endActivity(ownsActivity) }
+        defer {
+            launcherOperationComponent = nil
+            endActivity(ownsActivity)
+        }
         do {
             let packageDump = try await adb.run(["-s", device.serial, "shell", "dumpsys package \(RemoteFiles.shellQuote(launcher.packageName))"])
             if LauncherCompatibility.requiresGooglePlayLicense(packageDump) {
@@ -2495,7 +2500,14 @@ final class DeviceManager {
     func disableFireTVLauncherRedirect() async {
         guard let redirect = launcherRedirect,
               let device = devices.first(where: { $0.id == redirect.deviceID }) else { return }
+        launcherOperationComponent = redirect.launcher.component
+        let ownsActivity = beginActivity("Restoring Fire TV Home", detail: redirect.launcher.name, fraction: 0.2)
+        defer {
+            launcherOperationComponent = nil
+            endActivity(ownsActivity)
+        }
         await disableFireTVLauncherRedirect(on: device)
+        transfer?.fraction = 1
         launcherRedirect = nil
         statusMessage = "Restored Fire TV Home"
     }

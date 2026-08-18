@@ -73,6 +73,7 @@ enum ADBState: String, Codable, Sendable {
     case connected = "Connected"
     case unauthorized = "Authorize on device"
     case available = "ADB available"
+    case offline = "Offline"
     case disabled = "ADB off"
     case unknown = "Unknown"
 
@@ -142,13 +143,18 @@ struct AndroidDevice: Identifiable, Hashable, Sendable {
         return nil
     }
 
+    var supportsDownloadMode: Bool {
+        "\(name) \(manufacturer) \(model)".localizedCaseInsensitiveContains("samsung")
+    }
+
     var listPriority: Int {
         switch adbState {
         case .connected: 0
         case .unauthorized: 1
         case .available: 2
-        case .disabled where isAndroidLikely: 3
-        case .disabled, .unknown: 4
+        case .offline: 3
+        case .disabled where isAndroidLikely: 4
+        case .disabled, .unknown: 5
         }
     }
 
@@ -159,6 +165,82 @@ struct AndroidDevice: Identifiable, Hashable, Sendable {
         if lhsIdentified != rhsIdentified { return lhsIdentified }
         if lhs.name != rhs.name { return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending }
         return NetworkDiscovery.ipParts(lhs.id).lexicographicallyPrecedes(NetworkDiscovery.ipParts(rhs.id))
+    }
+}
+
+enum DevicePowerState: String, Sendable {
+    case awake = "Screen awake"
+    case asleep = "Screen asleep"
+    case dozing = "Screen dozing"
+    case unknown = "Screen state unavailable"
+
+    static func parse(_ output: String) -> Self {
+        let value = output.lowercased()
+        if value.contains("mwakefulness=awake") || value.contains("state=on") { return .awake }
+        if value.contains("mwakefulness=asleep") || value.contains("state=off") { return .asleep }
+        if value.contains("mwakefulness=dozing") || value.contains("mwakefulness=dreaming") { return .dozing }
+        return .unknown
+    }
+
+    var symbol: String {
+        switch self {
+        case .awake: "sun.max.fill"
+        case .asleep: "moon.zzz.fill"
+        case .dozing: "moon.stars.fill"
+        case .unknown: "power.circle"
+        }
+    }
+}
+
+enum DevicePowerAction: String, Identifiable, Sendable {
+    case sleep, wake, restart, recovery, bootloader, download, shutdown
+
+    var id: Self { self }
+    var title: String {
+        switch self {
+        case .sleep: "Sleep screen"
+        case .wake: "Wake screen"
+        case .restart: "Restart"
+        case .recovery: "Restart in Recovery"
+        case .bootloader: "Restart in Bootloader / Fastboot"
+        case .download: "Restart in Download Mode"
+        case .shutdown: "Shut Down"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .sleep: "moon.zzz.fill"
+        case .wake: "sun.max.fill"
+        case .restart: "arrow.clockwise.circle.fill"
+        case .recovery: "cross.case.fill"
+        case .bootloader: "terminal.fill"
+        case .download: "arrow.down.to.line"
+        case .shutdown: "power"
+        }
+    }
+    var requiresConfirmation: Bool { ![.sleep, .wake].contains(self) }
+    var disconnects: Bool { requiresConfirmation }
+    var confirmation: String {
+        switch self {
+        case .restart: "The device will disconnect while Android restarts."
+        case .recovery: "The device will restart in Recovery. A remote may not work there."
+        case .bootloader: "The device will restart in its bootloader or Fastboot interface. A USB connection may be required to continue."
+        case .download: "The Samsung device will restart in Download Mode. A USB connection may be required to exit or continue."
+        case .shutdown: "The device will turn off and cannot be started again through ADB."
+        case .sleep, .wake: ""
+        }
+    }
+
+    func arguments(serial: String) -> [String] {
+        switch self {
+        case .sleep: ["-s", serial, "shell", "input keyevent KEYCODE_SLEEP"]
+        case .wake: ["-s", serial, "shell", "input keyevent KEYCODE_WAKEUP"]
+        case .restart: ["-s", serial, "reboot"]
+        case .recovery: ["-s", serial, "reboot", "recovery"]
+        case .bootloader: ["-s", serial, "reboot", "bootloader"]
+        case .download: ["-s", serial, "reboot", "download"]
+        case .shutdown: ["-s", serial, "shell", "reboot -p"]
+        }
     }
 }
 
@@ -1083,6 +1165,7 @@ final class DeviceManager {
     var storage: DeviceStorage?
     var performance: DevicePerformance?
     var performanceError: String?
+    var powerState = DevicePowerState.unknown
     var isLoadingFolderSizes = false
     var recentlyAddedApps: Set<String> = []
     var removingApps: Set<String> = []
@@ -1249,21 +1332,65 @@ final class DeviceManager {
         guard let device = selectedDevice, device.adbState.isUsable else {
             performance = nil
             performanceError = nil
+            powerState = .unknown
             return
         }
         do {
-            let output = try await adb.run(["-s", device.serial, "shell", "grep '^cpu ' /proc/stat; grep -E '^(MemTotal|MemAvailable):' /proc/meminfo"])
+            let output = try await adb.run(["-s", device.serial, "shell", "grep '^cpu ' /proc/stat; grep -E '^(MemTotal|MemAvailable):' /proc/meminfo; dumpsys power | grep -E 'mWakefulness=|Display Power: state=' || true"])
             guard let sample = PerformanceParser.sample(output) else {
                 throw ADBError.commandFailed("Android returned an unsupported CPU or memory report.\n\n\(output)")
             }
             guard selectedDevice?.id == device.id else { return }
             performance = PerformanceParser.performance(sample, after: previousCPU[device.id])
+            powerState = DevicePowerState.parse(output)
             previousCPU[device.id] = sample.cpu
             performanceError = nil
         } catch {
             performance = nil
             performanceError = error.localizedDescription
         }
+    }
+
+    func performPowerAction(_ action: DevicePowerAction) async {
+        guard let device = selectedDevice, device.adbState.isUsable else {
+            report(ADBError.commandFailed("Select and connect an authorized ADB device first."), operation: action.title)
+            return
+        }
+        guard action != .download || device.supportsDownloadMode else {
+            report(ADBError.commandFailed("Download Mode is vendor-specific and is only offered for identified Samsung devices."), operation: action.title)
+            return
+        }
+        let ownsActivity = beginActivity(action.title, detail: action.disconnects ? "Preparing \(device.name)" : "Sending to \(device.name)", fraction: 0.2)
+        defer { endActivity(ownsActivity) }
+        do {
+            _ = try await adb.run(action.arguments(serial: device.serial))
+            transfer?.fraction = 1
+            if action.disconnects {
+                markOffline(device.id)
+                statusMessage = "\(action.title) sent to \(device.name)"
+            } else {
+                powerState = action == .wake ? .awake : .asleep
+                statusMessage = "\(action.title) sent to \(device.name)"
+            }
+        } catch {
+            if action.disconnects, error.localizedDescription.localizedCaseInsensitiveContains("error: closed") {
+                markOffline(device.id)
+                statusMessage = "\(action.title) sent to \(device.name)"
+            } else {
+                report(error, operation: "\(action.title) \(device.name)")
+            }
+        }
+    }
+
+    private func markOffline(_ deviceID: String) {
+        if let index = devices.firstIndex(where: { $0.id == deviceID }) { devices[index].adbState = .offline }
+        apps = []
+        files = []
+        storage = nil
+        performance = nil
+        performanceError = nil
+        powerState = .unknown
+        loadedAppsDeviceID = nil
     }
 
     func optimizeDevice() async {

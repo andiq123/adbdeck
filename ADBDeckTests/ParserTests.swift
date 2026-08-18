@@ -95,6 +95,16 @@ final class ParserTests: XCTestCase {
         XCTAssertEqual(performance.memoryUsed, 716_800)
     }
 
+    func testPowerStateAndContextualCommands() {
+        XCTAssertEqual(DevicePowerState.parse("mWakefulness=Awake"), .awake)
+        XCTAssertEqual(DevicePowerState.parse("mWakefulness=Asleep"), .asleep)
+        XCTAssertEqual(DevicePowerState.parse("Display Power: state=OFF"), .asleep)
+        XCTAssertEqual(DevicePowerAction.bootloader.arguments(serial: "tv:5555"), ["-s", "tv:5555", "reboot", "bootloader"])
+        XCTAssertEqual(DevicePowerAction.shutdown.arguments(serial: "tv:5555"), ["-s", "tv:5555", "shell", "reboot -p"])
+        XCTAssertTrue(AndroidDevice(id: "1", name: "Samsung TV", manufacturer: "Samsung", model: "TV", adbState: .connected, isAndroidLikely: true, hasCast: false).supportsDownloadMode)
+        XCTAssertFalse(AndroidDevice(id: "2", name: "Fire TV", manufacturer: "Amazon", model: "AFTKRT", adbState: .connected, isAndroidLikely: true, hasCast: false).supportsDownloadMode)
+    }
+
     func testADBMDNSDiscoveryIncludesClassicAndTLSDevices() {
         let output = """
         List of discovered mdns services

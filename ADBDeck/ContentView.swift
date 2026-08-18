@@ -33,6 +33,7 @@ struct ContentView: View {
     @State private var showRemoteInput = false
     @State private var showDeviceActivity = false
     @State private var remoteText = ""
+    @State private var pendingPowerAction: DevicePowerAction?
 
     private var androidDevices: [AndroidDevice] { manager.devices.filter { $0.isAndroidLikely } }
     private var otherDevices: [AndroidDevice] { manager.devices.filter { !$0.isAndroidLikely } }
@@ -99,6 +100,7 @@ struct ContentView: View {
             manager.fileClipboard = nil
             manager.performance = nil
             manager.performanceError = nil
+            manager.powerState = .unknown
             Task { await reloadDetail() }
         }
         .onChange(of: detailMode) { Task { await reloadDetail() } }
@@ -147,7 +149,7 @@ struct ContentView: View {
     }
 
     private var presentedContent: some View {
-        optimizationAlertContent
+        powerAlertContent
         .alert("Rename", isPresented: Binding(get: { fileToRename != nil }, set: { if !$0 { fileToRename = nil } })) {
             TextField("Name", text: $editedName)
             Button("Cancel", role: .cancel) { fileToRename = nil }
@@ -174,6 +176,22 @@ struct ContentView: View {
         .sheet(isPresented: $showDeviceActivity) {
             deviceActivitySheet
         }
+    }
+
+    private var powerAlertContent: some View {
+        optimizationAlertContent
+            .alert(pendingPowerAction?.title ?? "Device power", isPresented: Binding(
+                get: { pendingPowerAction != nil },
+                set: { if !$0 { pendingPowerAction = nil } }
+            ), presenting: pendingPowerAction) { action in
+                Button("Cancel", role: .cancel) { pendingPowerAction = nil }
+                Button(action.title, role: action == .shutdown ? .destructive : nil) {
+                    pendingPowerAction = nil
+                    Task { await manager.performPowerAction(action) }
+                }
+            } message: { action in
+                Text(action.confirmation)
+            }
     }
 
     private var optimizationAlertContent: some View {
@@ -548,9 +566,16 @@ struct ContentView: View {
                 } description: {
                     Text(device.adbState == .unauthorized
                          ? "Accept the debugging prompt on the device, then connect again."
+                         : device.adbState == .offline
+                         ? "The device is restarting or powered off. Turn it on if needed, then refresh."
                          : "Enable USB or network debugging in Developer options, then connect.")
                 } actions: {
-                    Button("Connect") { Task { await manager.connectSelected() } }
+                    Button(device.adbState == .offline ? "Refresh Devices" : "Connect") {
+                        Task {
+                            if device.adbState == .offline { await manager.refresh() }
+                            else { await manager.connectSelected() }
+                        }
+                    }
                         .buttonStyle(.borderedProminent)
                 }
             }
@@ -595,10 +620,42 @@ struct ContentView: View {
                 Button { showDeviceActivity = true } label: { Label("Activity", systemImage: "rectangle.stack.fill").foregroundStyle(.orange) }
                     .help("See and control the current and recent apps")
                     .disabled(!device.adbState.isUsable || manager.isWorking)
+                Menu {
+                    Section(manager.powerState.rawValue) {
+                        switch manager.powerState {
+                        case .awake:
+                            Button { requestPowerAction(.sleep) } label: { Label(DevicePowerAction.sleep.title, systemImage: DevicePowerAction.sleep.symbol) }
+                        case .asleep, .dozing:
+                            Button { requestPowerAction(.wake) } label: { Label(DevicePowerAction.wake.title, systemImage: DevicePowerAction.wake.symbol) }
+                        case .unknown:
+                            Button { Task { await manager.loadPerformance() } } label: { Label("Check screen state", systemImage: "arrow.clockwise") }
+                        }
+                    }
+                    Section("Restart") {
+                        Button { requestPowerAction(.restart) } label: { Label(DevicePowerAction.restart.title, systemImage: DevicePowerAction.restart.symbol) }
+                        Button { requestPowerAction(.recovery) } label: { Label(DevicePowerAction.recovery.title, systemImage: DevicePowerAction.recovery.symbol) }
+                        Button { requestPowerAction(.bootloader) } label: { Label(DevicePowerAction.bootloader.title, systemImage: DevicePowerAction.bootloader.symbol) }
+                        if device.supportsDownloadMode {
+                            Button { requestPowerAction(.download) } label: { Label(DevicePowerAction.download.title, systemImage: DevicePowerAction.download.symbol) }
+                        }
+                    }
+                    Divider()
+                    Button(role: .destructive) { requestPowerAction(.shutdown) } label: { Label(DevicePowerAction.shutdown.title, systemImage: DevicePowerAction.shutdown.symbol) }
+                } label: {
+                    Label("Power", systemImage: manager.powerState.symbol)
+                        .foregroundStyle(manager.powerState == .awake ? Color.orange : Color.indigo)
+                }
+                .help(manager.powerState.rawValue)
+                .disabled(!device.adbState.isUsable || manager.isWorking)
                 Button { Task { await reloadDetail() } } label: { Label("Reload", systemImage: "arrow.clockwise") }
                     .disabled(!device.adbState.isUsable || manager.isWorking)
             }
         }
+    }
+
+    private func requestPowerAction(_ action: DevicePowerAction) {
+        if action.requiresConfirmation { pendingPowerAction = action }
+        else { Task { await manager.performPowerAction(action) } }
     }
 
     private var appList: some View {

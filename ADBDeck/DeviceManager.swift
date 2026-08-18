@@ -373,11 +373,15 @@ enum PackageMetadataParser {
                 continue
             }
             guard let package else { continue }
-            let field = line.dropFirst(min(4, line.count))
+            let field = line.trimmingCharacters(in: .whitespaces)
             if field.hasPrefix("firstInstallTime=") {
-                result[package, default: AppDates()].installed = formatter.date(from: String(field.dropFirst(17)))
+                if let date = formatter.date(from: String(field.dropFirst(17))) {
+                    result[package, default: AppDates()].installed = max(result[package]?.installed ?? .distantPast, date)
+                }
             } else if field.hasPrefix("lastUpdateTime=") {
-                result[package, default: AppDates()].updated = formatter.date(from: String(field.dropFirst(15)))
+                if let date = formatter.date(from: String(field.dropFirst(15))) {
+                    result[package, default: AppDates()].updated = max(result[package]?.updated ?? .distantPast, date)
+                }
             }
         }
         return result

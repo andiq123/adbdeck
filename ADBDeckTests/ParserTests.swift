@@ -176,10 +176,11 @@ final class ParserTests: XCTestCase {
           Package [com.example.unknown] (ghi):
             firstInstallTime=not-a-date
         """)
-        XCTAssertEqual(dates.count, 3)
+        XCTAssertEqual(dates.count, 2)
         XCTAssertNotNil(dates["com.example.old"]?.installed)
         XCTAssertGreaterThan(dates["com.example.new"]!.installed!, dates["com.example.old"]!.installed!)
         XCTAssertGreaterThan(dates["com.example.new"]!.updated!, dates["com.example.new"]!.installed!)
+        XCTAssertEqual(Calendar.current.component(.year, from: dates["com.example.new"]!.installed!), 2026)
         XCTAssertNil(dates["com.example.unknown"]?.installed)
     }
 

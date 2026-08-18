@@ -224,6 +224,38 @@ struct DeviceApp: Identifiable, Hashable, Sendable {
     }
 }
 
+enum ActivityParser {
+    private static let currentPattern = try! NSRegularExpression(
+        pattern: #"([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+)/"#
+    )
+    private static let recentPattern = try! NSRegularExpression(
+        pattern: #"(?:A=\d+:|I=)([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+)"#
+    )
+
+    static func foreground(_ output: String) -> String? {
+        output.split(separator: "\n").lazy
+            .filter { $0.contains("mResumedActivity") || $0.contains("topResumedActivity") || $0.contains("ResumedActivity") }
+            .compactMap { capture(in: String($0), with: currentPattern) }
+            .first
+    }
+
+    static func recents(_ output: String, limit: Int = 12) -> [String] {
+        var seen = Set<String>()
+        return output.split(separator: "\n").compactMap { line in
+            guard line.contains("Recent #"), let package = capture(in: String(line), with: recentPattern), seen.insert(package).inserted else { return nil }
+            return package
+        }.prefix(limit).map { $0 }
+    }
+
+    private static func capture(in text: String, with expression: NSRegularExpression) -> String? {
+        let range = NSRange(text.startIndex..., in: text)
+        guard let match = expression.firstMatch(in: text, range: range),
+              match.numberOfRanges > 1,
+              let capture = Range(match.range(at: 1), in: text) else { return nil }
+        return String(text[capture])
+    }
+}
+
 struct AppDates: Equatable, Sendable {
     var installed: Date?
     var updated: Date?
@@ -1021,6 +1053,9 @@ final class DeviceManager {
     var isLoadingFolderSizes = false
     var recentlyAddedApps: Set<String> = []
     var removingApps: Set<String> = []
+    var foregroundPackage: String?
+    var recentPackages: [String] = []
+    var isLoadingActivity = false
 
     private let adb = ADBClient()
     private var previousCPU: [String: CPUTicks] = [:]
@@ -1544,7 +1579,64 @@ final class DeviceManager {
         do {
             _ = try await adb.run(["-s", device.serial, "shell", "monkey -p \(app.packageName) -c android.intent.category.LAUNCHER 1"])
             statusMessage = "Opened \(app.displayName)"
+            try? await Task.sleep(for: .milliseconds(250))
+            await loadActivity()
         } catch { report(error, operation: "Open \(app.displayName)") }
+    }
+
+    func loadActivity() async {
+        guard let device = selectedDevice, device.adbState.isUsable else {
+            foregroundPackage = nil
+            recentPackages = []
+            return
+        }
+        guard !isLoadingActivity else { return }
+        isLoadingActivity = true
+        defer { isLoadingActivity = false }
+        do {
+            async let currentTask = adb.run(["-s", device.serial, "shell", "dumpsys activity activities"])
+            async let recentTask = adb.run(["-s", device.serial, "shell", "dumpsys activity recents"])
+            let (currentOutput, recentOutput) = try await (currentTask, recentTask)
+            guard selectedDevice?.id == device.id else { return }
+            let installed = Set(apps.map(\.packageName))
+            let current = ActivityParser.foreground(currentOutput).flatMap { installed.contains($0) ? $0 : nil }
+            let recent = ActivityParser.recents(recentOutput).filter { installed.contains($0) && $0 != current }
+            withAnimation(.smooth) {
+                foregroundPackage = current
+                recentPackages = recent
+            }
+            statusMessage = current.map { "\(DeviceApp(packageName: $0, isSystem: false).displayName) is open" } ?? "No managed app is in front"
+        } catch {
+            report(error, operation: "Read device activity")
+        }
+    }
+
+    func backgroundCurrentApp() async {
+        guard let device = selectedDevice, device.adbState.isUsable else { return }
+        let ownsActivity = beginActivity("Backgrounding app", detail: device.name)
+        defer { endActivity(ownsActivity) }
+        do {
+            _ = try await adb.run(["-s", device.serial, "shell", "input keyevent KEYCODE_HOME"])
+            try? await Task.sleep(for: .milliseconds(250))
+            await loadActivity()
+            statusMessage = "Moved the current app to the background"
+        } catch {
+            report(error, operation: "Background current app")
+        }
+    }
+
+    func forceQuit(_ app: DeviceApp) async {
+        guard let device = selectedDevice, device.adbState.isUsable else { return }
+        let ownsActivity = beginActivity("Force quitting \(app.displayName)", detail: device.name)
+        defer { endActivity(ownsActivity) }
+        do {
+            _ = try await adb.run(["-s", device.serial, "shell", "am force-stop \(RemoteFiles.shellQuote(app.packageName))"])
+            try? await Task.sleep(for: .milliseconds(250))
+            await loadActivity()
+            statusMessage = "Force quit \(app.displayName)"
+        } catch {
+            report(error, operation: "Force quit \(app.displayName)")
+        }
     }
 
     func loadFiles(at path: String? = nil) async {

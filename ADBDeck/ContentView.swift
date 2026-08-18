@@ -31,6 +31,7 @@ struct ContentView: View {
     @State private var showOtherDevices = false
     @State private var showOptimizeConfirmation = false
     @State private var showRemoteInput = false
+    @State private var showDeviceActivity = false
     @State private var remoteText = ""
 
     private var androidDevices: [AndroidDevice] { manager.devices.filter { $0.isAndroidLikely } }
@@ -170,6 +171,9 @@ struct ContentView: View {
         .sheet(isPresented: $showRemoteInput) {
             remoteInputSheet
         }
+        .sheet(isPresented: $showDeviceActivity) {
+            deviceActivitySheet
+        }
     }
 
     private var optimizationAlertContent: some View {
@@ -267,6 +271,120 @@ struct ContentView: View {
         }
         .padding(24)
         .frame(width: 520)
+    }
+
+    private var deviceActivitySheet: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                Label("Device activity", systemImage: "rectangle.stack.fill")
+                    .font(.title2.bold())
+                Spacer()
+                if manager.isLoadingActivity { ProgressView().controlSize(.small) }
+                Button { Task { await manager.loadActivity() } } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .labelStyle(.iconOnly)
+                .help("Refresh device activity")
+                .disabled(manager.isLoadingActivity || manager.isWorking)
+            }
+
+            Text("Current app")
+                .font(.headline)
+            if let package = manager.foregroundPackage {
+                let app = activityApp(package)
+                activityRow(app, isCurrent: true)
+                    .padding(14)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+            } else if manager.isLoadingActivity {
+                ProgressView("Checking the foreground app…")
+                    .frame(maxWidth: .infinity, minHeight: 70)
+            } else {
+                ContentUnavailableView("Home screen", systemImage: "house", description: Text("No managed app is currently in front."))
+                    .frame(minHeight: 100)
+            }
+
+            HStack {
+                Text("Recent apps")
+                    .font(.headline)
+                Spacer()
+                Text("\(manager.recentPackages.count)")
+                    .font(.caption.bold().monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            if manager.recentPackages.isEmpty && !manager.isLoadingActivity {
+                Text("No recent managed apps were reported by Android.")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 80)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(manager.recentPackages, id: \.self) { package in
+                            activityRow(activityApp(package), isCurrent: false)
+                            Divider()
+                        }
+                    }
+                }
+                .frame(maxHeight: 280)
+            }
+
+            HStack {
+                Text("Background returns to Home. Force Quit stops the app until it is opened again.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Done") { showDeviceActivity = false }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 560)
+        .frame(minHeight: 430)
+        .task { await manager.loadActivity() }
+    }
+
+    private func activityRow(_ app: DeviceApp, isCurrent: Bool) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: app.symbol)
+                .foregroundStyle(.blue)
+                .frame(width: 28, height: 28)
+                .background(.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(app.displayName).fontWeight(.semibold)
+                    if isCurrent {
+                        Text("OPEN")
+                            .font(.caption2.bold())
+                            .foregroundStyle(.green)
+                    }
+                }
+                Text(app.packageName)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            if isCurrent {
+                Button("Background") { Task { await manager.backgroundCurrentApp() } }
+                    .disabled(manager.isWorking)
+            } else {
+                Button { Task { await manager.launch(app) } } label: {
+                    Label("Open", systemImage: "play.fill")
+                }
+                .help("Open \(app.displayName)")
+                .disabled(manager.isWorking)
+            }
+            Button(role: .destructive) { Task { await manager.forceQuit(app) } } label: {
+                Label("Force Quit", systemImage: "xmark.circle")
+            }
+            .labelStyle(.iconOnly)
+            .help("Force quit \(app.displayName)")
+            .disabled(manager.isWorking)
+        }
+        .padding(.vertical, 10)
+    }
+
+    private func activityApp(_ package: String) -> DeviceApp {
+        manager.apps.first { $0.packageName == package } ?? DeviceApp(packageName: package, isSystem: false)
     }
 
     private var sidebar: some View {
@@ -407,6 +525,9 @@ struct ContentView: View {
                     .disabled(!device.adbState.isUsable || manager.isWorking)
                 Button { showRemoteInput = true } label: { Label("Type on device", systemImage: "keyboard") }
                     .help("Send Mac text and remote keys to the focused field")
+                    .disabled(!device.adbState.isUsable || manager.isWorking)
+                Button { showDeviceActivity = true } label: { Label("Activity", systemImage: "rectangle.stack") }
+                    .help("See and control the current and recent apps")
                     .disabled(!device.adbState.isUsable || manager.isWorking)
                 Button { Task { await reloadDetail() } } label: { Label("Reload", systemImage: "arrow.clockwise") }
                     .disabled(!device.adbState.isUsable || manager.isWorking)

@@ -189,4 +189,19 @@ final class ParserTests: XCTestCase {
         XCTAssertThrowsError(try RemoteInput.command(for: String(repeating: "a", count: 501)))
     }
 
+    func testActivityParserFindsForegroundAndUniqueRecentApps() {
+        let activities = """
+          mResumedActivity: ActivityRecord{abc u0 com.netflix.ninja/.MainActivity t9}
+          ResumedActivity: ActivityRecord{abc u0 com.netflix.ninja/.MainActivity t9}
+        """
+        let recents = """
+          * Recent #0: Task{abc A=100:com.netflix.ninja U=0}
+          * Recent #1: Task{def I=org.smarttube.stable/.MainActivity U=0}
+          * Recent #2: Task{ghi A=101:com.netflix.ninja U=0}
+        """
+        XCTAssertEqual(ActivityParser.foreground(activities), "com.netflix.ninja")
+        XCTAssertEqual(ActivityParser.recents(recents), ["com.netflix.ninja", "org.smarttube.stable"])
+        XCTAssertNil(ActivityParser.foreground("mResumedActivity: null"))
+    }
+
 }

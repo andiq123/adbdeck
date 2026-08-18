@@ -981,8 +981,12 @@ private struct DeviceRow: View {
                 .foregroundStyle(device.kindColor)
                 .frame(width: 28)
             VStack(alignment: .leading, spacing: 3) {
+                Text(device.name)
+                    .fontWeight(.medium)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.86)
                 HStack(spacing: 6) {
-                    Text(device.name).fontWeight(.medium).lineLimit(1).layoutPriority(1)
+                    Text(device.id).font(.caption.monospaced()).foregroundStyle(.secondary)
                     if let label = device.typeLabel {
                         Text(label)
                             .font(.system(size: 9, weight: .semibold))
@@ -993,7 +997,6 @@ private struct DeviceRow: View {
                             .background(device.kindColor.opacity(0.16), in: Capsule())
                     }
                 }
-                Text(device.id).font(.caption.monospaced()).foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Circle()

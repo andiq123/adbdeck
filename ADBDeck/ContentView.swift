@@ -1298,6 +1298,7 @@ private struct RemoteScreenPreview: View {
 
 @MainActor
 private struct AppInspectorSheet: View {
+    @Environment(\.dismiss) private var dismiss
     @Bindable var manager: DeviceManager
     let app: DeviceApp
     @State private var confirmClearData = false
@@ -1319,6 +1320,10 @@ private struct AppInspectorSheet: View {
                 Button { Task { await manager.loadInspection(for: app) } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                     .labelStyle(.iconOnly)
                     .disabled(manager.isLoadingInspection || manager.isWorking)
+                Button("Close", systemImage: "xmark") { dismiss() }
+                    .labelStyle(.iconOnly)
+                    .keyboardShortcut(.cancelAction)
+                    .help("Close inspector")
             }
 
             if let inspection = manager.appInspection {

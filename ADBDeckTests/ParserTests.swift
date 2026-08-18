@@ -56,6 +56,7 @@ final class ParserTests: XCTestCase {
         XCTAssertEqual(files[1].size, 1536)
         XCTAssertEqual(RemoteFiles.parent(of: "/sdcard/My Folder"), "/sdcard")
         XCTAssertEqual(RemoteFiles.locationName(for: "/sdcard/Download/Movies"), "Downloads")
+        XCTAssertEqual(RemoteFiles.locationName(for: "/sdcard/Android/media/com.example"), "Android media")
         XCTAssertEqual(RemoteFiles.locationName(for: "/data/local/tmp/build.apk"), "ADB temporary files")
         XCTAssertEqual(RemoteFiles.locationName(for: "/system"), "system")
         XCTAssertTrue(RemoteFiles.shouldMeasureFolderSizes(in: "/sdcard/Download"))
@@ -282,6 +283,9 @@ final class ParserTests: XCTestCase {
         let failure = OperationFailure(operation: "Install", details: "This app does not support the device architecture.\n\nDevice response:\nINSTALL_FAILED_NO_MATCHING_ABIS", device: device)
         XCTAssertEqual(failure.summary, "This app does not support the device architecture.")
         XCTAssertEqual(failure.technicalDetails, "INSTALL_FAILED_NO_MATCHING_ABIS")
+        let commandFailure = OperationFailure(operation: "Browse", details: "Command: adb shell ls\nExit code: 1\n\nPermission denied", device: device)
+        XCTAssertEqual(commandFailure.summary, "Permission denied")
+        XCTAssertTrue(commandFailure.technicalDetails?.hasPrefix("Command:") == true)
     }
 
 }

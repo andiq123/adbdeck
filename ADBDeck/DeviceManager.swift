@@ -772,6 +772,7 @@ enum RemoteFiles {
     static func locationName(for path: String) -> String {
         if path == "/" { return "System root" }
         if path == "/sdcard/Download" || path.hasPrefix("/sdcard/Download/") { return "Downloads" }
+        if path == "/sdcard/Android/media" || path.hasPrefix("/sdcard/Android/media/") { return "Android media" }
         if path == "/sdcard/Android" || path.hasPrefix("/sdcard/Android/") { return "Android data" }
         if path == "/data/local/tmp" || path.hasPrefix("/data/local/tmp/") { return "ADB temporary files" }
         if path == "/sdcard" || path.hasPrefix("/sdcard/") { return "Internal storage" }
@@ -883,6 +884,9 @@ struct OperationFailure: Identifiable, Equatable {
         }
         let parts = details.components(separatedBy: "\n\n")
         guard parts.count > 1 else { return (details, nil) }
+        if details.hasPrefix("Command:") {
+            return (parts.dropFirst().joined(separator: "\n\n"), parts[0].nilIfEmpty)
+        }
         return (parts[0], parts.dropFirst().joined(separator: "\n\n").nilIfEmpty)
     }
 }
@@ -2335,7 +2339,12 @@ final class DeviceManager {
         } catch {
             if selectedDevice?.id == device.id, currentPath == target {
                 let details = error.localizedDescription.lowercased()
-                currentPathAccess = details.contains("permission denied") || details.contains("access denied") ? .denied : .unavailable
+                let denied = details.contains("permission denied") || details.contains("access denied")
+                currentPathAccess = denied ? .denied : .unavailable
+                if denied {
+                    statusMessage = "Android protects \(RemoteFiles.locationName(for: target))"
+                    return
+                }
             }
             report(error, operation: "Browse \(target)")
         }

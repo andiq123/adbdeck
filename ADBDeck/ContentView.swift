@@ -257,7 +257,9 @@ struct ContentView: View {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 12)], spacing: 12) {
                             diagnosticCard("Device", value: "\(device.manufacturer) \(device.model)", detail: device.typeLabel, symbol: device.symbol, color: .blue)
                             diagnosticCard("Android", value: device.androidVersion.map { "Android \($0)" } ?? "Unknown", detail: device.apiLevel.map { "API \($0)" }, symbol: "checkmark.seal.fill", color: .green)
-                            diagnosticCard("Choose this APK", value: device.recommendedAPKArchitecture ?? "Architecture not reported", detail: device.supportedABIs.map { "Supports \($0)" }, symbol: "cpu.fill", color: .purple)
+                            if failure.operation.localizedCaseInsensitiveContains("install") {
+                                diagnosticCard("Choose this APK", value: device.recommendedAPKArchitecture ?? "Architecture not reported", detail: device.supportedABIs.map { "Supports \($0)" }, symbol: "cpu.fill", color: .purple)
+                            }
                             diagnosticCard("Connection", value: device.serial, detail: device.adbState.rawValue, symbol: "network", color: .orange)
                         }
                         .textSelection(.enabled)
@@ -990,7 +992,8 @@ struct ContentView: View {
                 Menu {
                     Button("Internal storage") { Task { await manager.loadFiles(at: "/sdcard") } }
                     Button("Downloads") { Task { await manager.loadFiles(at: "/sdcard/Download") } }
-                    Button("Android data") { Task { await manager.loadFiles(at: "/sdcard/Android") } }
+                    Button("Android media") { Task { await manager.loadFiles(at: "/sdcard/Android/media") } }
+                    Button("App data (may be protected)") { Task { await manager.loadFiles(at: "/sdcard/Android/data") } }
                     Divider()
                     Button("ADB temporary files") { Task { await manager.loadFiles(at: "/data/local/tmp") } }
                     Button("System root") { Task { await manager.loadFiles(at: "/") } }

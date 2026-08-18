@@ -1834,7 +1834,7 @@ final class DeviceManager {
         defer { isLoadingInspection = false }
         do {
             async let detailsTask = adb.run(["-s", device.serial, "shell", "dumpsys package \(RemoteFiles.shellQuote(app.packageName))"])
-            async let helpTask = adb.run(["-s", device.serial, "shell", "pm help"])
+            async let helpTask = adb.run(["-s", device.serial, "shell", "pm help; exit 0"])
             let (details, help) = try await (detailsTask, helpTask)
             guard selectedDevice?.id == device.id else { return }
             appInspection = AppInspectionParser.parse(details, supportsCacheOnlyClear: help.contains("--cache-only"))

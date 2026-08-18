@@ -75,6 +75,22 @@ struct ContentView: View {
         return manager.files.filter { $0.name.localizedCaseInsensitiveContains(fileSearch) }
     }
 
+    private var currentLocationName: String { RemoteFiles.locationName(for: manager.currentPath) }
+    private var canModifyCurrentFolder: Bool { manager.currentPathAccess == .readWrite }
+    private var canPasteHere: Bool {
+        guard canModifyCurrentFolder, let item = manager.fileClipboard else { return false }
+        return item.file.path != RemoteFiles.joined(manager.currentPath, item.file.name)
+    }
+    private var fileEmptyDescription: String {
+        if !fileSearch.isEmpty { return "No items in \(currentLocationName) match “\(fileSearch)”." }
+        switch manager.currentPathAccess {
+        case .denied: return "Android denied ADB access to this folder."
+        case .unavailable: return "ADB could not read this folder. Check the connection and try again."
+        case .checking: return "Checking this folder through ADB."
+        case .readOnly, .readWrite: return "This folder is empty."
+        }
+    }
+
     var body: some View {
         presentedContent
     }
@@ -765,12 +781,14 @@ struct ContentView: View {
                 } else {
                     Menu {
                         Button(action: chooseUpload) { Label("Upload", systemImage: "square.and.arrow.up") }
+                            .disabled(!canModifyCurrentFolder)
                         Button {
                             newFolderName = ""
                             showNewFolder = true
                         } label: { Label("New folder", systemImage: "folder.badge.plus") }
+                            .disabled(!canModifyCurrentFolder)
                         Button { Task { await manager.pasteFiles() } } label: { Label("Paste", systemImage: "doc.on.clipboard") }
-                            .disabled(manager.fileClipboard == nil)
+                            .disabled(!canPasteHere)
                     } label: {
                         Label("File actions", systemImage: "folder.badge.gearshape").foregroundStyle(.blue)
                     }
@@ -909,12 +927,32 @@ struct ContentView: View {
             .frame(height: 58)
             .fixedSize(horizontal: false, vertical: true)
 
+            if let clipboard = manager.fileClipboard {
+                HStack(spacing: 10) {
+                    Label("\(clipboard.operation.rawValue): \(clipboard.file.name)", systemImage: clipboard.operation == .copy ? "doc.on.doc" : "scissors")
+                        .fontWeight(.medium)
+                        .lineLimit(1)
+                    Text(canPasteHere ? "Ready for \(currentLocationName)" : "Open a writable destination")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Cancel", role: .cancel) { manager.fileClipboard = nil }
+                    Button("Paste Here", systemImage: "doc.on.clipboard") { Task { await manager.pasteFiles() } }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!canPasteHere || manager.isWorking)
+                }
+                .padding(.horizontal, 16)
+                .frame(height: 48)
+                .background(.blue.opacity(0.08))
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+
             if manager.isWorking && manager.files.isEmpty {
                 Spacer()
                 ProgressView("Reading files…")
                 Spacer()
             } else if filteredFiles.isEmpty {
-                ContentUnavailableView("No files", systemImage: "folder", description: Text(fileSearch.isEmpty ? "This folder is empty or Android denied access." : "No items match your search."))
+                ContentUnavailableView("No files", systemImage: "folder", description: Text(fileEmptyDescription))
             } else {
                 List(filteredFiles) { file in
                     RemoteFileRow(
@@ -928,7 +966,8 @@ struct ContentView: View {
                             editedName = file.name
                             fileToRename = file
                         },
-                        remove: { fileToDelete = file }
+                        remove: { fileToDelete = file },
+                        canModify: canModifyCurrentFolder
                     )
                 }
                 .listStyle(.inset)
@@ -936,6 +975,8 @@ struct ContentView: View {
                 .disabled(manager.isWorking)
             }
         }
+        .onChange(of: manager.currentPath) { fileSearch = "" }
+        .animation(.smooth(duration: 0.2), value: manager.fileClipboard)
     }
 
     private func fileNavigation(showPermission: Bool) -> some View {
@@ -953,9 +994,9 @@ struct ContentView: View {
                     Button("ADB temporary files") { Task { await manager.loadFiles(at: "/data/local/tmp") } }
                     Button("System root") { Task { await manager.loadFiles(at: "/") } }
                 } label: {
-                    Label("Locations", systemImage: "externaldrive.fill")
+                    Label(currentLocationName, systemImage: "externaldrive.fill")
                 }
-                .frame(width: 140)
+                .frame(width: showPermission ? 170 : 145)
                 Text(manager.currentPath)
                     .font(.callout.monospaced())
                     .lineLimit(1)
@@ -963,18 +1004,45 @@ struct ContentView: View {
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if showPermission {
-                    if manager.currentPath != "/sdcard" && !manager.currentPath.hasPrefix("/sdcard/") {
-                        Label("Android permissions", systemImage: "lock.shield")
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Color.clear
-                    }
+                    Label(manager.currentPathAccess.label, systemImage: manager.currentPathAccess.symbol)
+                        .font(.caption.bold())
+                        .foregroundStyle(fileAccessColor)
+                        .fixedSize()
+                        .help(fileAccessHelp)
                 }
-                TextField("Search files", text: $fileSearch)
+                TextField("Search \(currentLocationName)", text: $fileSearch)
                     .textFieldStyle(.roundedBorder)
+                    .overlay(alignment: .trailing) {
+                        if !fileSearch.isEmpty {
+                            Button { fileSearch = "" } label: { Image(systemName: "xmark.circle.fill") }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.secondary)
+                                .padding(.trailing, 6)
+                                .help("Clear search")
+                        }
+                    }
                     .frame(width: 190)
             }
             .font(showPermission ? .caption : .body)
+    }
+
+    private var fileAccessColor: Color {
+        switch manager.currentPathAccess {
+        case .readWrite: .green
+        case .readOnly: .orange
+        case .denied, .unavailable: .red
+        case .checking: .secondary
+        }
+    }
+
+    private var fileAccessHelp: String {
+        switch manager.currentPathAccess {
+        case .readWrite: "ADB can read and change items in this folder."
+        case .readOnly: "ADB can read this folder, but Android blocks changes. Root access would be required to bypass it."
+        case .denied: "Android denied ADB access to this folder. ADB Deck does not bypass device security."
+        case .unavailable: "ADB could not verify access to this folder."
+        case .checking: "Checking the folder through ADB."
+        }
     }
 
     private func addManualDevice() {
@@ -1576,6 +1644,7 @@ private struct RemoteFileRow: View {
     let cut: () -> Void
     let rename: () -> Void
     let remove: () -> Void
+    let canModify: Bool
 
     var body: some View {
         HStack(spacing: 13) {
@@ -1604,6 +1673,22 @@ private struct RemoteFileRow: View {
                 .buttonStyle(.borderless)
                 .foregroundStyle(file.isDirectory ? Color.accentColor : .blue)
                 .help(file.isDirectory ? "Open folder" : "Download")
+            Menu {
+                Button(file.isDirectory ? "Open" : "Download", action: open)
+                if file.isDirectory { Button("Download", action: download) }
+                Divider()
+                Button("Copy", systemImage: "doc.on.doc", action: copy)
+                Button("Move", systemImage: "scissors", action: cut).disabled(!canModify)
+                Button("Rename", systemImage: "pencil", action: rename).disabled(!canModify)
+                Divider()
+                Button("Delete", systemImage: "trash", role: .destructive, action: remove).disabled(!canModify)
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .frame(width: 28)
+            .help("File actions")
         }
         .padding(.vertical, 5)
         .contentShape(Rectangle())
@@ -1613,10 +1698,10 @@ private struct RemoteFileRow: View {
             if file.isDirectory { Button("Download", action: download) }
             Divider()
             Button("Copy", action: copy)
-            Button("Cut", action: cut)
-            Button("Rename", action: rename)
+            Button("Move", action: cut).disabled(!canModify)
+            Button("Rename", action: rename).disabled(!canModify)
             Divider()
-            Button("Delete", role: .destructive, action: remove)
+            Button("Delete", role: .destructive, action: remove).disabled(!canModify)
         }
     }
 }

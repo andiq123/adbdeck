@@ -733,6 +733,29 @@ struct RemoteFile: Identifiable, Hashable, Sendable {
     }
 }
 
+enum RemoteFileAccess: Equatable, Sendable {
+    case checking, readWrite, readOnly, denied, unavailable
+
+    var label: String {
+        switch self {
+        case .checking: "Checking access"
+        case .readWrite: "Read & write"
+        case .readOnly: "Read only"
+        case .denied: "Access denied"
+        case .unavailable: "Unavailable"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .checking: "ellipsis.circle"
+        case .readWrite: "lock.open.fill"
+        case .readOnly: "lock.fill"
+        case .denied, .unavailable: "exclamationmark.lock.fill"
+        }
+    }
+}
+
 enum RemoteFiles {
     static let protectedRoots: Set<String> = ["/", "/data", "/product", "/sdcard", "/storage", "/system", "/vendor"]
 
@@ -744,6 +767,15 @@ enum RemoteFiles {
         guard path != "/" else { return "/" }
         let parent = URL(fileURLWithPath: path).deletingLastPathComponent().path
         return parent.isEmpty ? "/" : parent
+    }
+
+    static func locationName(for path: String) -> String {
+        if path == "/" { return "System root" }
+        if path == "/sdcard/Download" || path.hasPrefix("/sdcard/Download/") { return "Downloads" }
+        if path == "/sdcard/Android" || path.hasPrefix("/sdcard/Android/") { return "Android data" }
+        if path == "/data/local/tmp" || path.hasPrefix("/data/local/tmp/") { return "ADB temporary files" }
+        if path == "/sdcard" || path.hasPrefix("/sdcard/") { return "Internal storage" }
+        return URL(fileURLWithPath: path).lastPathComponent.nilIfEmpty ?? "Device files"
     }
 
     static func shellQuote(_ value: String) -> String {
@@ -1470,6 +1502,7 @@ final class DeviceManager {
     var transfer: TransferStatus?
     var files: [RemoteFile] = []
     var currentPath = "/sdcard"
+    var currentPathAccess = RemoteFileAccess.checking
     var fileClipboard: RemoteClipboard?
     var lastError: OperationFailure?
     var optimizationResult: OptimizationResult?
@@ -2275,14 +2308,18 @@ final class DeviceManager {
         let target = path ?? currentPath
         guard target.hasPrefix("/"), !target.contains("\n") else { statusMessage = "Invalid device path"; return }
         currentPath = target
+        currentPathAccess = .checking
         files = []
         folderSizeRequestID = UUID()
         isLoadingFolderSizes = false
         let ownsActivity = beginActivity("Opening folder", detail: target)
         defer { endActivity(ownsActivity) }
         do {
-            let output = try await adb.run(["-s", device.serial, "shell", "ls -la \(RemoteFiles.shellQuote(target))"])
+            let quoted = RemoteFiles.shellQuote(target)
+            let command = "if [ ! -r \(quoted) ]; then echo 'Permission denied' >&2; exit 1; fi; ls -la \(quoted) || exit $?; if [ -w \(quoted) ]; then echo '__ADBDECK_ACCESS__:rw'; else echo '__ADBDECK_ACCESS__:ro'; fi"
+            let output = try await adb.run(["-s", device.serial, "shell", command])
             guard selectedDevice?.id == device.id, currentPath == target else { return }
+            currentPathAccess = output.contains("__ADBDECK_ACCESS__:rw") ? .readWrite : .readOnly
             withAnimation(.smooth) { files = RemoteFiles.parse(output, in: target) }
             statusMessage = "Loaded \(files.count) item\(files.count == 1 ? "" : "s")"
             let folders = files.filter { $0.isDirectory }.map(\.path)
@@ -2291,7 +2328,13 @@ final class DeviceManager {
                 folderSizeRequestID = requestID
                 Task { await loadFolderSizes(folders, for: device, at: target, requestID: requestID) }
             }
-        } catch { report(error, operation: "Browse \(target)") }
+        } catch {
+            if selectedDevice?.id == device.id, currentPath == target {
+                let details = error.localizedDescription.lowercased()
+                currentPathAccess = details.contains("permission denied") || details.contains("access denied") ? .denied : .unavailable
+            }
+            report(error, operation: "Browse \(target)")
+        }
     }
 
     private func loadFolderSizes(_ folders: [String], for device: AndroidDevice, at path: String, requestID: UUID) async {

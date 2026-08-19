@@ -13,6 +13,20 @@ struct ContentView: View {
         case updated = "Recently updated"
         case size = "Size"
     }
+    private enum AppCategory: String, CaseIterable {
+        case all = "All categories"
+        case launcher = "Launcher"
+        case system = "System"
+        case disabled = "Disabled"
+        case video = "Video"
+        case music = "Music"
+        case vpn = "VPN"
+        case browser = "Browser"
+        case downloader = "Downloader"
+        case casting = "Casting"
+        case game = "Game"
+        case utility = "Utility"
+    }
 
     @State private var manager = DeviceManager()
     @State private var search = ""
@@ -26,6 +40,7 @@ struct ContentView: View {
     @State private var newFolderName = ""
     @State private var detailMode = DetailMode.apps
     @SwiftUI.AppStorage("appSort") private var appSort = AppSort.name
+    @State private var appCategory = AppCategory.all
     @State private var showAddDevice = false
     @State private var manualAddress = ""
     @State private var showOtherDevices = false
@@ -44,7 +59,16 @@ struct ContentView: View {
     private var otherDevices: [AndroidDevice] { manager.devices.filter { !$0.isAndroidLikely } }
 
     private var filteredApps: [DeviceApp] {
-        let filtered = search.isEmpty ? manager.apps : manager.apps.filter {
+        let categorized = manager.apps.filter { app in
+            switch appCategory {
+            case .all: return true
+            case .launcher: return manager.launcherPackages.contains(app.packageName)
+            case .system: return app.isSystem
+            case .disabled: return !app.isEnabled
+            default: return app.category == appCategory.rawValue
+            }
+        }
+        let filtered = search.isEmpty ? categorized : categorized.filter {
             $0.packageName.localizedCaseInsensitiveContains(search) || $0.displayName.localizedCaseInsensitiveContains(search)
         }
         switch appSort {
@@ -976,7 +1000,18 @@ struct ContentView: View {
         HStack(spacing: 12) {
                 Toggle("System apps", isOn: $manager.showSystemApps)
                     .toggleStyle(.switch)
-                    .onChange(of: manager.showSystemApps) { Task { await manager.loadApps() } }
+                    .onChange(of: manager.showSystemApps) {
+                        if !manager.showSystemApps, appCategory == .system { appCategory = .all }
+                        Task { await manager.loadApps() }
+                    }
+                Picker("Category", selection: $appCategory) {
+                    ForEach(AppCategory.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.menu)
+                .frame(width: 150)
+                .onChange(of: appCategory) {
+                    if appCategory == .system { manager.showSystemApps = true }
+                }
                 Picker("Sort", selection: $appSort) {
                     ForEach(AppSort.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }

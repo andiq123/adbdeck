@@ -91,6 +91,8 @@ enum DeviceKind: Sendable, Equatable {
     case fireTV, television, phone, tablet, automotive, watch, androidDevice, cast
     case router, raspberryPi, printer, camera, computer, network
 
+    var supportsPersistentHome: Bool { self == .fireTV || self == .television }
+
     var symbol: String {
         switch self {
         case .fireTV: "flame.fill"
@@ -365,6 +367,7 @@ struct DevicePerformance: Equatable, Sendable {
 struct DeviceApp: Identifiable, Hashable, Sendable {
     let packageName: String
     let isSystem: Bool
+    var isEnabled = true
     var storage: AppStorage? = nil
     var installedAt: Date? = nil
     var updatedAt: Date? = nil
@@ -398,6 +401,19 @@ struct DeviceApp: Identifiable, Hashable, Sendable {
         if ["game", "geforce"].contains(where: value.contains) { return "gamecontroller.fill" }
         if ["settings", "tools", "adb"].contains(where: value.contains) { return "wrench.and.screwdriver.fill" }
         return isSystem ? "gearshape.2.fill" : "app.fill"
+    }
+
+    var category: String? {
+        let value = packageName.lowercased()
+        if ["youtube", "netflix", "video", "twitch", "stremio", "disney", "prime"].contains(where: value.contains) { return "Video" }
+        if ["spotify", "music", "audio"].contains(where: value.contains) { return "Music" }
+        if ["vpn", "security"].contains(where: value.contains) { return "VPN" }
+        if ["browser", "chrome", "firefox"].contains(where: value.contains) { return "Browser" }
+        if ["download", "loader"].contains(where: value.contains) { return "Downloader" }
+        if ["cast", "receiver"].contains(where: value.contains) { return "Casting" }
+        if ["game", "geforce"].contains(where: value.contains) { return "Game" }
+        if ["settings", "tools", "adb"].contains(where: value.contains) { return "Utility" }
+        return nil
     }
 }
 
@@ -560,6 +576,10 @@ struct DeviceLauncher: Identifiable, Hashable, Sendable {
         let value = component.lowercased()
         return value.contains("fallbackhome") || value.contains("recoveryactivity") || value.contains("firehomestarter")
     }
+    var isPlatformHome: Bool {
+        let package = packageName.lowercased()
+        return package.hasPrefix("com.amazon.") || package == "com.google.android.apps.tv.launcherx" || package == "com.google.android.tvlauncher"
+    }
 }
 
 struct LauncherRedirect: Equatable, Sendable {
@@ -579,12 +599,28 @@ enum FireTVHomeHelper {
     static let service = "\(packageName)/\(packageName).HomeRedirectService"
     static let enabledSetting = "adbdeck_launcher_enabled"
     static let componentSetting = "adbdeck_launcher_component"
+    static let originalSetting = "adbdeck_original_launcher_component"
 
     static func accessibilityServices(_ current: String, enabling: Bool) -> String {
         var services = current.trimmingCharacters(in: .whitespacesAndNewlines)
             .split(separator: ":").map(String.init).filter { !$0.isEmpty && $0 != "null" && $0 != service }
         if enabling { services.append(service) }
         return services.joined(separator: ":")
+    }
+}
+
+enum AppControlSafety {
+    private static let protectedPackages: Set<String> = [
+        "android", "com.android.systemui", "com.android.settings", "com.android.shell",
+        "com.android.providers.settings", "com.android.permissioncontroller",
+        "com.google.android.permissioncontroller", "com.google.android.packageinstaller",
+        FireTVHomeHelper.packageName
+    ]
+
+    static func disableReason(for package: String, currentLauncher: String?) -> String? {
+        if protectedPackages.contains(package) { return "Android requires this package for core device operation." }
+        if currentLauncher == package { return "Choose another Home launcher before disabling the current one." }
+        return nil
     }
 }
 
@@ -1614,6 +1650,7 @@ final class DeviceManager {
     var recentPackages: [String] = []
     var isLoadingActivity = false
     var launchers: [DeviceLauncher] = []
+    var launcherPackages: Set<String> = []
     var currentLauncher: String?
     var isLoadingLaunchers = false
     var launcherRedirect: LauncherRedirect?
@@ -1719,13 +1756,23 @@ final class DeviceManager {
         do {
             async let userTask = packages(on: device, system: false)
             async let metadataTask = try? adb.run(["-s", device.serial, "shell", "dumpsys package packages | grep -E '^  Package \\[|firstInstallTime=|lastUpdateTime='"])
+            async let launcherTask = try? adb.run(["-s", device.serial, "shell", "cmd package query-activities --brief --components --query-flags 0x200 -a android.intent.action.MAIN -c android.intent.category.HOME"])
+            async let currentLauncherTask = try? adb.run(["-s", device.serial, "shell", "cmd package resolve-activity --brief --components -a android.intent.action.MAIN -c android.intent.category.HOME"])
+            async let disabledTask = try? adb.run(["-s", device.serial, "shell", "pm list packages -d --user 0"])
             let system = showSystemApps ? try await packages(on: device, system: true) : []
             let user = try await userTask
             let metadataOutput: String? = await metadataTask
+            let launcherOutput: String? = await launcherTask
+            let currentLauncherOutput: String? = await currentLauncherTask
+            let disabledOutput: String? = await disabledTask
             let dates = PackageMetadataParser.dates(metadataOutput ?? "")
+            let disabled = Set((disabledOutput ?? "").split(separator: "\n").compactMap { $0.hasPrefix("package:") ? String($0.dropFirst(8)) : nil })
             guard selectedDevice?.id == device.id else { return }
+            launcherPackages = Set(LauncherParser.components(launcherOutput ?? "").map { String($0.split(separator: "/", maxSplits: 1).first ?? "") })
+            currentLauncher = LauncherParser.components(currentLauncherOutput ?? "").first
             var loaded: [DeviceApp] = user + system
             for index in loaded.indices {
+                loaded[index].isEnabled = !disabled.contains(loaded[index].packageName)
                 loaded[index].installedAt = dates[loaded[index].packageName]?.installed
                 loaded[index].updatedAt = dates[loaded[index].packageName]?.updated
             }
@@ -1971,6 +2018,29 @@ final class DeviceManager {
             appInspection = AppInspectionParser.parse(details, supportsCacheOnlyClear: help.contains("--cache-only"))
             statusMessage = "Inspected \(app.displayName)"
         } catch { report(error, operation: "Inspect \(app.displayName)") }
+    }
+
+    func setAppEnabled(_ app: DeviceApp, enabled: Bool) async {
+        guard let device = selectedDevice, device.adbState.isUsable, app.isSystem else { return }
+        let currentHomePackage = currentLauncher.map { String($0.split(separator: "/", maxSplits: 1).first ?? "") }
+        if !enabled, let reason = AppControlSafety.disableReason(for: app.packageName, currentLauncher: currentHomePackage) {
+            report(ADBError.commandFailed(reason), operation: "Disable \(app.displayName)")
+            return
+        }
+        let verb = enabled ? "Enable" : "Disable"
+        let ownsActivity = beginActivity("\(verb) system app", detail: app.displayName, fraction: 0.2)
+        defer { endActivity(ownsActivity) }
+        do {
+            let command = enabled ? "pm enable --user 0" : "pm disable-user --user 0"
+            _ = try await adb.run(["-s", device.serial, "shell", "\(command) \(RemoteFiles.shellQuote(app.packageName))"])
+            transfer?.fraction = 0.8
+            if let index = apps.firstIndex(where: { $0.packageName == app.packageName }) {
+                withAnimation(.smooth) { apps[index].isEnabled = enabled }
+            }
+            await loadInspection(for: app)
+            transfer?.fraction = 1
+            statusMessage = "\(enabled ? "Enabled" : "Disabled") \(app.displayName)"
+        } catch { report(error, operation: "\(verb) \(app.displayName)") }
     }
 
     func setPermission(_ permission: AppPermission, granted: Bool, for app: DeviceApp) async {
@@ -2406,7 +2476,7 @@ final class DeviceManager {
         defer { isLoadingLaunchers = false }
         do {
             let intent = "-a android.intent.action.MAIN -c android.intent.category.HOME"
-            async let choicesTask = adb.run(["-s", device.serial, "shell", "cmd package query-activities --brief --components \(intent)"])
+            async let choicesTask = adb.run(["-s", device.serial, "shell", "cmd package query-activities --brief --components --query-flags 0x200 \(intent)"])
             async let currentTask = adb.run(["-s", device.serial, "shell", "cmd package resolve-activity --brief --components \(intent)"])
             let (choicesOutput, currentOutput) = try await (choicesTask, currentTask)
             guard selectedDevice?.id == device.id else { return }
@@ -2419,7 +2489,8 @@ final class DeviceManager {
                     return $0.name.localizedStandardCompare($1.name) == .orderedAscending
                 }
             currentLauncher = current
-            await loadFireTVLauncherRedirect(on: device)
+            launcherPackages = Set(launchers.map(\.packageName))
+            await loadPersistentLauncherRedirect(on: device)
             statusMessage = "Found \(launchers.filter { !$0.isFallback }.count) launcher\(launchers.filter { !$0.isFallback }.count == 1 ? "" : "s")"
         } catch { report(error, operation: "Detect launchers") }
     }
@@ -2451,8 +2522,8 @@ final class DeviceManager {
         } catch { report(error, operation: "Use \(launcher.name)") }
     }
 
-    func enableFireTVLauncherRedirect(_ launcher: DeviceLauncher) async {
-        guard let device = selectedDevice, device.adbState.isUsable, device.kind == .fireTV,
+    func enablePersistentLauncherRedirect(_ launcher: DeviceLauncher) async {
+        guard let device = selectedDevice, device.adbState.isUsable, device.kind.supportsPersistentHome,
               launchers.contains(launcher), !launcher.isFallback else { return }
         launcherOperationComponent = launcher.component
         let ownsActivity = beginActivity("Enabling persistent Home", detail: launcher.name, fraction: 0.1)
@@ -2469,7 +2540,7 @@ final class DeviceManager {
                 }
             }
             guard let helper = Bundle.main.url(forResource: "ADBDeckFireTVHelper", withExtension: "apk") else {
-                throw ADBError.commandFailed("The Fire TV Home helper is missing from this ADB Deck build.")
+                throw ADBError.commandFailed("The persistent Home helper is missing from this ADB Deck build.")
             }
             transfer?.detail = "Installing the on-device Home helper"
             let installOutput = try await adb.runStreaming(["-s", device.serial, "install", "-r", helper.path], progress: progressHandler(from: 0.12, to: 0.55))
@@ -2478,6 +2549,11 @@ final class DeviceManager {
             transfer?.fraction = 0.58
             let currentServices = try await adb.run(["-s", device.serial, "shell", "settings get secure enabled_accessibility_services"])
             let services = FireTVHomeHelper.accessibilityServices(currentServices, enabling: true)
+            let resolvedHome = try await adb.run(["-s", device.serial, "shell", "cmd package resolve-activity --brief --components -a android.intent.action.MAIN -c android.intent.category.HOME"])
+            let original = currentLauncher ?? LauncherParser.components(resolvedHome).first
+            if let original {
+                _ = try await adb.run(["-s", device.serial, "shell", "settings put secure \(FireTVHomeHelper.originalSetting) \(RemoteFiles.shellQuote(original))"])
+            }
             _ = try await adb.run(["-s", device.serial, "shell", "settings put secure \(FireTVHomeHelper.componentSetting) \(RemoteFiles.shellQuote(launcher.component))"])
             _ = try await adb.run(["-s", device.serial, "shell", "settings put secure \(FireTVHomeHelper.enabledSetting) 1"])
             _ = try await adb.run(["-s", device.serial, "shell", "settings put secure enabled_accessibility_services \(RemoteFiles.shellQuote(services))"])
@@ -2492,8 +2568,8 @@ final class DeviceManager {
                 try? await Task.sleep(for: .milliseconds(250))
             }
             guard helperIsBound else {
-                await disableFireTVLauncherRedirect(on: device)
-                throw ADBError.commandFailed("Fire OS installed the Home helper but did not start its accessibility service. The helper was disabled and Amazon Home was restored.")
+                await disablePersistentLauncherRedirect(on: device)
+                throw ADBError.commandFailed("Android installed the Home helper but did not start its accessibility service. The helper was disabled and the original Home app was restored.")
             }
             _ = try? await adb.run(["-s", device.serial, "shell", "dumpsys deviceidle whitelist +\(FireTVHomeHelper.packageName)"])
             _ = try? await adb.run(["-s", device.serial, "shell", "cmd package set-home-activity --user 0 \(RemoteFiles.shellQuote(launcher.component))"])
@@ -2502,8 +2578,8 @@ final class DeviceManager {
             try? await Task.sleep(for: .milliseconds(900))
             let activity = try await adb.run(["-s", device.serial, "shell", "dumpsys activity activities"])
             guard ActivityParser.foreground(activity) == launcher.packageName else {
-                await disableFireTVLauncherRedirect(on: device)
-                throw ADBError.commandFailed("The on-device helper could not redirect Fire TV Home to \(launcher.name). The helper was disabled and Amazon Home was restored.")
+                await disablePersistentLauncherRedirect(on: device)
+                throw ADBError.commandFailed("The on-device helper could not redirect Home to \(launcher.name). The helper was disabled and the original Home app was restored.")
             }
             launcherRedirect = LauncherRedirect(deviceID: device.id, serial: device.serial, launcher: launcher)
             transfer?.fraction = 1
@@ -2511,23 +2587,24 @@ final class DeviceManager {
         } catch { report(error, operation: "Enable persistent \(launcher.name)") }
     }
 
-    func disableFireTVLauncherRedirect() async {
+    func disablePersistentLauncherRedirect() async {
         guard let redirect = launcherRedirect,
               let device = devices.first(where: { $0.id == redirect.deviceID }) else { return }
         launcherOperationComponent = redirect.launcher.component
-        let ownsActivity = beginActivity("Restoring Fire TV Home", detail: redirect.launcher.name, fraction: 0.2)
+        let ownsActivity = beginActivity("Restoring Home", detail: redirect.launcher.name, fraction: 0.2)
         defer {
             launcherOperationComponent = nil
             endActivity(ownsActivity)
         }
-        await disableFireTVLauncherRedirect(on: device)
+        await disablePersistentLauncherRedirect(on: device)
         transfer?.fraction = 1
         launcherRedirect = nil
-        statusMessage = "Restored Fire TV Home"
+        statusMessage = "Restored the original Home app"
     }
 
-    private func disableFireTVLauncherRedirect(on device: AndroidDevice) async {
+    private func disablePersistentLauncherRedirect(on device: AndroidDevice) async {
         let currentServices = (try? await adb.run(["-s", device.serial, "shell", "settings get secure enabled_accessibility_services"])) ?? ""
+        let original = (try? await adb.run(["-s", device.serial, "shell", "settings get secure \(FireTVHomeHelper.originalSetting)"]))?.trimmingCharacters(in: .whitespacesAndNewlines)
         let services = FireTVHomeHelper.accessibilityServices(currentServices, enabling: false)
         _ = try? await adb.run(["-s", device.serial, "shell", "settings put secure \(FireTVHomeHelper.enabledSetting) 0"])
         if services.isEmpty {
@@ -2537,12 +2614,17 @@ final class DeviceManager {
             _ = try? await adb.run(["-s", device.serial, "shell", "settings put secure enabled_accessibility_services \(RemoteFiles.shellQuote(services))"])
         }
         _ = try? await adb.run(["-s", device.serial, "shell", "am force-stop \(FireTVHomeHelper.packageName)"])
-        _ = try? await adb.run(["-s", device.serial, "shell", "cmd package set-home-activity --user 0 com.amazon.tv.launcher/.ui.HomeActivity_vNext"])
+        let fallback = device.kind == .fireTV ? "com.amazon.tv.launcher/.ui.HomeActivity_vNext" : nil
+        if let home = original?.nilIfEmpty ?? fallback {
+            _ = try? await adb.run(["-s", device.serial, "shell", "cmd package set-home-activity --user 0 \(RemoteFiles.shellQuote(home))"])
+        }
+        _ = try? await adb.run(["-s", device.serial, "shell", "settings delete secure \(FireTVHomeHelper.componentSetting)"])
+        _ = try? await adb.run(["-s", device.serial, "shell", "settings delete secure \(FireTVHomeHelper.originalSetting)"])
         _ = try? await adb.run(["-s", device.serial, "shell", "input keyevent KEYCODE_HOME"])
     }
 
-    private func loadFireTVLauncherRedirect(on device: AndroidDevice) async {
-        guard device.kind == .fireTV else { launcherRedirect = nil; return }
+    private func loadPersistentLauncherRedirect(on device: AndroidDevice) async {
+        guard device.kind.supportsPersistentHome else { launcherRedirect = nil; return }
         async let enabledTask = try? adb.run(["-s", device.serial, "shell", "settings get secure \(FireTVHomeHelper.enabledSetting)"])
         async let componentTask = try? adb.run(["-s", device.serial, "shell", "settings get secure \(FireTVHomeHelper.componentSetting)"])
         async let servicesTask = try? adb.run(["-s", device.serial, "shell", "settings get secure enabled_accessibility_services"])

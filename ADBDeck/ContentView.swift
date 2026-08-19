@@ -575,8 +575,8 @@ struct ContentView: View {
             }
             Text("Choose the app Android opens when Home is pressed. Only installed apps that advertise the HOME role are shown.")
                 .foregroundStyle(.secondary)
-            if manager.selectedDevice?.kind == .fireTV {
-                Label("Persistent Home installs a small helper on Fire TV. It keeps working after this Mac disconnects and after Fire TV restarts; Amazon Home remains enabled for recovery.", systemImage: "exclamationmark.shield.fill")
+            if manager.selectedDevice?.kind.supportsPersistentHome == true {
+                Label("Persistent Home installs a small helper on the device. It keeps working after this Mac disconnects and after restarts; the original Home app remains enabled for recovery.", systemImage: "exclamationmark.shield.fill")
                     .font(.callout)
                     .foregroundStyle(.orange)
                     .padding(12)
@@ -606,12 +606,14 @@ struct ContentView: View {
                                     Text("Recovery fallback").font(.caption).foregroundStyle(.secondary)
                                 } else {
                                     HStack(spacing: 8) {
-                                        if manager.selectedDevice?.kind == .fireTV, !launcher.packageName.hasPrefix("com.amazon.") {
+                                        if launcher.component == manager.currentLauncher, manager.launcherRedirect == nil {
+                                            Label("Default", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                                        } else if manager.selectedDevice?.kind.supportsPersistentHome == true, !launcher.isPlatformHome {
                                             Toggle(manager.launcherOperationComponent == launcher.component ? "Updating…" : "Use persistently", isOn: Binding(
                                                 get: { manager.launcherRedirect?.launcher == launcher },
                                                 set: { enabled in
                                                     if enabled { pendingLauncherRedirect = launcher }
-                                                    else { Task { await manager.disableFireTVLauncherRedirect() } }
+                                                    else { Task { await manager.disablePersistentLauncherRedirect() } }
                                                 }
                                             ))
                                             .toggleStyle(.switch)
@@ -619,8 +621,6 @@ struct ContentView: View {
                                             if manager.launcherOperationComponent == launcher.component {
                                                 ProgressView().controlSize(.small)
                                             }
-                                        } else if launcher.component == manager.currentLauncher {
-                                            Label("Default", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
                                         } else {
                                             Button("Use") { Task { await manager.setDefaultLauncher(launcher) } }
                                                 .buttonStyle(.borderedProminent)
@@ -637,8 +637,8 @@ struct ContentView: View {
                 }
                 .frame(maxHeight: 360)
             }
-            if manager.selectedDevice?.kind == .fireTV {
-                Text(manager.launcherRedirect == nil ? "Persistent Home is off." : "Persistent on Fire TV · This Mac can disconnect safely.")
+            if manager.selectedDevice?.kind.supportsPersistentHome == true {
+                Text(manager.launcherRedirect == nil ? "Persistent Home is off." : "Persistent on device · This Mac can disconnect safely.")
                     .font(.caption)
                     .foregroundStyle(manager.launcherRedirect == nil ? Color.secondary : .orange)
             }
@@ -647,7 +647,7 @@ struct ContentView: View {
         .frame(width: 640)
         .frame(minHeight: 420)
         .overlay(alignment: .top) {
-            if let transfer = manager.transfer, !showLaunchers {
+            if let transfer = manager.transfer {
                 TransferBanner(transfer: transfer)
                     .frame(maxWidth: 560)
                     .padding(16)
@@ -656,17 +656,17 @@ struct ContentView: View {
         }
         .animation(.smooth(duration: 0.25), value: manager.transfer)
         .task { await manager.loadLaunchers() }
-        .alert("Make this Fire TV Home persistent?", isPresented: Binding(
+        .alert("Make this Home app persistent?", isPresented: Binding(
             get: { pendingLauncherRedirect != nil },
             set: { if !$0 { pendingLauncherRedirect = nil } }
         ), presenting: pendingLauncherRedirect) { launcher in
             Button("Cancel", role: .cancel) { pendingLauncherRedirect = nil }
             Button("Enable persistently") {
                 pendingLauncherRedirect = nil
-                Task { await manager.enableFireTVLauncherRedirect(launcher) }
+                Task { await manager.enablePersistentLauncherRedirect(launcher) }
             }
         } message: { launcher in
-            Text("ADB Deck will install its small Home helper, open \(launcher.name), and verify the complete flow. It will remain active after the Mac disconnects and after restarts. You can reconnect later to turn it off; Amazon Home is never removed.")
+            Text("ADB Deck will install its small Home helper, open \(launcher.name), and verify the complete flow. It remains active after the Mac disconnects and after restarts. You can reconnect later to turn it off; the original Home app is never removed.")
         }
     }
 
@@ -834,7 +834,7 @@ struct ContentView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .overlay(alignment: .bottom) {
-            if let transfer = manager.transfer {
+            if let transfer = manager.transfer, !showLaunchers {
                 TransferBanner(transfer: transfer)
                     .frame(maxWidth: 620)
                     .padding(20)
@@ -941,6 +941,7 @@ struct ContentView: View {
             } else {
                 List(filteredApps) { app in
                     AppRow(app: app,
+                           isLauncher: manager.launcherPackages.contains(app.packageName),
                            isNew: manager.recentlyAddedApps.contains(app.packageName),
                            isRemoving: manager.removingApps.contains(app.packageName),
                            dateLabel: appSort == .installed ? "Installed" : appSort == .updated ? "Updated" : nil,
@@ -1302,6 +1303,7 @@ private struct DeviceHeader: View {
 
 private struct AppRow: View {
     let app: DeviceApp
+    let isLauncher: Bool
     let isNew: Bool
     let isRemoving: Bool
     let dateLabel: String?
@@ -1321,6 +1323,12 @@ private struct AppRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(app.displayName).fontWeight(.medium)
                 Text(app.packageName).font(.caption.monospaced()).foregroundStyle(.secondary)
+                HStack(spacing: 5) {
+                    if isLauncher { appBadge("Launcher", color: .green) }
+                    if app.isSystem { appBadge("System", color: .orange) }
+                    if !app.isEnabled { appBadge("Disabled", color: .red) }
+                    if let category = app.category { appBadge(category, color: .blue) }
+                }
             }
             Spacer()
             if isNew {
@@ -1335,7 +1343,6 @@ private struct AppRow: View {
                     .foregroundStyle(.red)
                     .transition(.scale.combined(with: .opacity))
             }
-            if app.isSystem { Text("System").font(.caption).foregroundStyle(.secondary) }
             if let dateLabel {
                 Text(date.map { "\(dateLabel) \($0.formatted(date: .abbreviated, time: .omitted))" } ?? "Date unavailable")
                     .font(.caption.monospacedDigit())
@@ -1364,6 +1371,7 @@ private struct AppRow: View {
             Button(action: launch) { Image(systemName: "play.fill") }
                 .buttonStyle(.borderless)
                 .foregroundStyle(.green)
+                .disabled(!app.isEnabled)
                 .help("Open app")
             Button(role: .destructive, action: remove) { Image(systemName: "trash") }
                 .buttonStyle(.borderless)
@@ -1380,10 +1388,19 @@ private struct AppRow: View {
         .contextMenu {
             Button("Inspect", action: inspect)
             Button("Clone app package", action: download)
-            Button("Open", action: launch)
+            Button("Open", action: launch).disabled(!app.isEnabled)
             Divider()
             Button("Remove", role: .destructive, action: remove)
         }
+    }
+
+    private func appBadge(_ label: String, color: Color) -> some View {
+        Text(label)
+            .font(.caption2.bold())
+            .foregroundStyle(color)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.12), in: Capsule())
     }
 }
 
@@ -1442,6 +1459,7 @@ private struct AppInspectorSheet: View {
     @Bindable var manager: DeviceManager
     let app: DeviceApp
     @State private var confirmClearData = false
+    @State private var confirmDisable = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -1469,13 +1487,26 @@ private struct AppInspectorSheet: View {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 260), spacing: 10)], spacing: 10) {
                     inspectorFact("Version", inspection.versionName ?? "Unknown", detail: inspection.versionCode.map { "Code \($0)" }, color: .blue)
                     inspectorFact("Android support", inspection.minSDK.map { "API \($0)+" } ?? "Unknown", detail: inspection.targetSDK.map { "Targets API \($0)" }, color: .green)
-                    inspectorFact("State", inspection.isSuspended ? "Suspended" : inspection.isStopped ? "Stopped" : "Ready", detail: inspection.enabledState, color: inspection.isSuspended ? .red : .orange)
+                    inspectorFact("State", inspection.enabledState == "Disabled" ? "Disabled" : inspection.isSuspended ? "Suspended" : inspection.isStopped ? "Stopped" : "Ready", detail: inspection.enabledState, color: inspection.enabledState == "Disabled" || inspection.isSuspended ? .red : .orange)
                     inspectorFact("Storage", app.storage.map { byteCount($0.total) } ?? "Unavailable", detail: app.storage.map { "Data \(byteCount($0.data)) · Cache \(byteCount($0.cache))" }, color: .purple)
                 }
 
                 HStack(spacing: 10) {
-                    Button { Task { await manager.launch(app) } } label: { Label("Open", systemImage: "play.fill") }.tint(.green)
-                    Button(role: .destructive) { Task { await manager.forceQuit(app) } } label: { Label("Force Quit", systemImage: "xmark.circle.fill") }.tint(.red)
+                    Button { Task { await manager.launch(app) } } label: { Label("Open", systemImage: "play.fill") }
+                        .tint(.green).disabled(inspection.enabledState == "Disabled" || manager.isWorking)
+                    Button(role: .destructive) { Task { await manager.forceQuit(app) } } label: { Label("Force Quit", systemImage: "xmark.circle.fill") }
+                        .tint(.red).disabled(inspection.enabledState == "Disabled" || manager.isWorking)
+                    if app.isSystem {
+                        if inspection.enabledState == "Disabled" {
+                            Button { Task { await manager.setAppEnabled(app, enabled: true) } } label: { Label("Enable", systemImage: "power") }
+                                .tint(.green).disabled(manager.isWorking)
+                        } else {
+                            Button { confirmDisable = true } label: { Label("Disable", systemImage: "power") }
+                                .tint(.orange)
+                                .disabled(manager.isWorking || disableReason != nil)
+                                .help(disableReason ?? "Turn off this system app for the current Android user without uninstalling it")
+                        }
+                    }
                     Spacer()
                     Button { Task { await manager.clearCache(for: app) } } label: { Label("Clear Cache", systemImage: "eraser.fill") }
                         .disabled(!inspection.supportsCacheOnlyClear || manager.isWorking)
@@ -1544,6 +1575,17 @@ private struct AppInspectorSheet: View {
         } message: {
             Text("This resets \(app.displayName), removing its accounts, settings, downloads, and cache. The app remains installed. This cannot be undone.")
         }
+        .alert("Disable this system app?", isPresented: $confirmDisable) {
+            Button("Cancel", role: .cancel) {}
+            Button("Disable", role: .destructive) { Task { await manager.setAppEnabled(app, enabled: false) } }
+        } message: {
+            Text("\(app.displayName) will stop running and disappear from normal use for this Android user. You can return here and enable it again.")
+        }
+    }
+
+    private var disableReason: String? {
+        let current = manager.currentLauncher.map { String($0.split(separator: "/", maxSplits: 1).first ?? "") }
+        return AppControlSafety.disableReason(for: app.packageName, currentLauncher: current)
     }
 
     private func inspectorFact(_ title: String, _ value: String, detail: String?, color: Color) -> some View {

@@ -254,7 +254,15 @@ final class ParserTests: XCTestCase {
         let components = LauncherParser.components(output)
         XCTAssertEqual(components, ["com.amazon.tv.launcher/.ui.HomeActivity_vNext", "com.example.launcher/com.example.launcher.HomeActivity", "com.amazon.tv.settings.v2/.system.FallbackHome"])
         XCTAssertFalse(DeviceLauncher(component: components[0], name: "Fire TV Home").isFallback)
+        XCTAssertTrue(DeviceLauncher(component: components[0], name: "Fire TV Home").isPlatformHome)
         XCTAssertTrue(DeviceLauncher(component: components[2], name: "Fallback").isFallback)
+    }
+
+    func testAppLabelsAndDisableSafety() {
+        XCTAssertEqual(DeviceApp(packageName: "com.example.browser", isSystem: false).category, "Browser")
+        XCTAssertNil(AppControlSafety.disableReason(for: "com.vendor.telemetry", currentLauncher: nil))
+        XCTAssertNotNil(AppControlSafety.disableReason(for: "com.android.systemui", currentLauncher: nil))
+        XCTAssertNotNil(AppControlSafety.disableReason(for: "com.example.home", currentLauncher: "com.example.home"))
     }
 
     func testLauncherCompatibilityDetectsPlayProtectedBuilds() {

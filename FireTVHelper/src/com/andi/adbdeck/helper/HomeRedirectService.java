@@ -18,7 +18,10 @@ public final class HomeRedirectService extends AccessibilityService {
     @Override public void onAccessibilityEvent(AccessibilityEvent event) {
         if (event.getEventType() != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return;
         CharSequence source = event.getPackageName();
-        if (source == null || !(source.equals("com.amazon.tv.launcher") || source.equals("com.amazon.firehomestarter"))) return;
+        if (source == null || !(source.equals("com.amazon.tv.launcher")
+                || source.equals("com.amazon.firehomestarter")
+                || source.equals("com.google.android.apps.tv.launcherx")
+                || source.equals("com.google.android.tvlauncher"))) return;
         redirect();
     }
 
@@ -27,7 +30,7 @@ public final class HomeRedirectService extends AccessibilityService {
         long now = System.currentTimeMillis();
         if (now - lastRedirect < 900) return;
         ComponentName target = ComponentName.unflattenFromString(Settings.Secure.getString(getContentResolver(), COMPONENT));
-        if (target == null || target.getPackageName().startsWith("com.amazon.")) return;
+        if (target == null || target.getPackageName().equals(getPackageName())) return;
         Intent home = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).setComponent(target)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
         if (home.resolveActivity(getPackageManager()) == null) return;

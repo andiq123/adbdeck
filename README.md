@@ -12,6 +12,10 @@
   <img alt="macOS 14+" src="https://img.shields.io/badge/macOS-14%2B-111111?style=flat-square&logo=apple">
 </p>
 
+<p align="center">
+  <img src="docs/adb-deck.png" alt="ADB Deck managing connected Fire TV and onn. streaming devices">
+</p>
+
 ## One place for every Android screen
 
 ADB Deck discovers ADB-enabled TVs, streaming boxes, phones, tablets, and car head units. It identifies familiar hardware, keeps active devices easy to reach, and turns wireless ADB into a focused Mac experience.

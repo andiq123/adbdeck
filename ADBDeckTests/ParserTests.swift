@@ -2,6 +2,112 @@ import XCTest
 @testable import ADBDeck
 
 final class ParserTests: XCTestCase {
+    func testUploadUses64BitSizesAndChecksDestinationLimits() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("movie '日本語'.mkv")
+        FileManager.default.createFile(atPath: file.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: file)
+        try handle.truncate(atOffset: 5_368_709_120)
+        try handle.close()
+        let item = try XCTUnwrap(UploadItem.prepare([file]).first)
+        XCTAssertEqual(item.bytes, 5_368_709_120)
+        XCTAssertEqual(item.largestFile, item.bytes)
+        XCTAssertFalse(item.isDirectory)
+        XCTAssertNoThrow(try UploadItem.validateCapacity(total: item.bytes, largestFile: item.bytes, free: 8_000_000_000, fileSystem: "ext4"))
+        XCTAssertThrowsError(try UploadItem.validateCapacity(total: item.bytes, largestFile: item.bytes, free: 3_340_000_000, fileSystem: "ext4"))
+        XCTAssertThrowsError(try UploadItem.validateCapacity(total: item.bytes, largestFile: item.bytes, free: 8_000_000_000, fileSystem: "vfat"))
+        XCTAssertNoThrow(try UploadItem.validateCapacity(total: item.bytes, largestFile: item.bytes, free: 8_000_000_000, fileSystem: "exfat"))
+        XCTAssertThrowsError(try UploadItem.prepare([file, file]))
+        let link = root.appendingPathComponent("link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: file)
+        XCTAssertThrowsError(try UploadItem.prepare([link]))
+        XCTAssertEqual(UploadProcess.fraction(in: "[ 12%] path: 99%\r[ 42%] path: 10%"), 0.42)
+    }
+
+    func testUploadTerminalProgressAndCancellation() async throws {
+        let progress = expectation(description: "Native terminal progress")
+        let runner = UploadProcess()
+        try await runner.run(binary: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", "test -t 1 && printf '[ 42%%] fixture\\r'" ]) { value in
+            XCTAssertEqual(value, 0.42)
+            progress.fulfill()
+        }
+        await fulfillment(of: [progress], timeout: 2)
+        let sleeper = UploadProcess()
+        let task = Task { try await sleeper.run(binary: URL(fileURLWithPath: "/bin/sleep"), arguments: ["20"]) { _ in } }
+        try await Task.sleep(for: .milliseconds(150))
+        sleeper.cancel()
+        do { try await task.value; XCTFail("Cancellation should throw") } catch is CancellationError { }
+        let cancelled = UploadProcess()
+        cancelled.cancel()
+        do { try await cancelled.run(binary: URL(fileURLWithPath: "/bin/sleep"), arguments: ["20"]) { _ in }; XCTFail("Pre-start cancellation should throw") } catch is CancellationError { }
+    }
+
+    @MainActor
+    func testLiveUploadWhenExplicitlyRequested() async throws {
+        guard let serial = ProcessInfo.processInfo.environment["ADBDECK_UPLOAD_SERIAL"] else {
+            throw XCTSkip("Set TEST_RUNNER_ADBDECK_UPLOAD_SERIAL to opt into a real-device upload test.")
+        }
+        let id = UUID().uuidString
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("adbdeck-test-\(id)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("test '日本語'.bin")
+        let random = try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/urandom"))
+        let contents = try XCTUnwrap(random.read(upToCount: 32 * 1024 * 1024))
+        try random.close()
+        try contents.write(to: file)
+        let empty = root.appendingPathComponent("empty file.txt")
+        try Data().write(to: empty)
+        let folder = root.appendingPathComponent("Nested folder")
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("Empty"), withIntermediateDirectories: true)
+        try Data("Nested content".utf8).write(to: folder.appendingPathComponent("child.txt"))
+        let adb = ADBClient()
+        let remote = "/sdcard/Download/adbdeck-test-\(id)"
+        _ = try await adb.run(["-s", serial, "shell", "mkdir \(RemoteFiles.shellQuote(remote))"])
+        do {
+            let manager = DeviceManager()
+            let device = AndroidDevice(id: serial.replacingOccurrences(of: ":5555", with: ""), name: "Upload test", manufacturer: "Unknown", model: "Unknown", adbState: .connected, isAndroidLikely: true, hasCast: false)
+            manager.devices = [device]
+            manager.selection = device.id
+            manager.currentPath = remote
+            manager.currentPathAccess = .readWrite
+            manager.upload([file, empty, folder])
+            var sawProgress = false
+            while manager.isUploading {
+                if let value = manager.transfer?.fraction, value > 0, value < 1 { sawProgress = true }
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            XCTAssertNil(manager.lastError, manager.lastError?.details ?? "")
+            XCTAssertTrue(sawProgress, "Expected intermediate progress from native ADB")
+            let received = try await adb.runData(["-s", serial, "exec-out", "cat \(RemoteFiles.shellQuote(RemoteFiles.joined(remote, file.lastPathComponent)))"])
+            XCTAssertEqual(received, contents)
+            XCTAssertEqual(manager.files.count, 3)
+            let nested = try await adb.run(["-s", serial, "shell", "cat \(RemoteFiles.shellQuote(remote + "/Nested folder/child.txt"))"])
+            XCTAssertEqual(nested, "Nested content")
+            manager.upload([empty])
+            while manager.isUploading { try await Task.sleep(for: .milliseconds(100)) }
+            XCTAssertNotNil(manager.lastError, "Existing files must be protected")
+            let cancelFile = root.appendingPathComponent("cancel.bin")
+            try FileManager.default.copyItem(at: file, to: cancelFile)
+            manager.upload([cancelFile])
+            while manager.isUploading {
+                if let fraction = manager.transfer?.fraction, fraction > 0 { manager.cancelUpload(); break }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            while manager.isUploading { try await Task.sleep(for: .milliseconds(100)) }
+            XCTAssertNil(manager.lastError, manager.lastError?.details ?? "")
+            XCTAssertEqual(manager.files.count, 3, "Cancellation must clean up only the incomplete item")
+            await manager.loadFiles(at: "/sdcard")
+            XCTAssertTrue(manager.files.contains { $0.name == "Download" && $0.isDirectory }, "Storage aliases must show their contents, not the symlink itself")
+        } catch {
+            _ = try? await adb.run(["-s", serial, "shell", "rm -rf \(RemoteFiles.shellQuote(remote))"])
+            throw error
+        }
+        _ = try await adb.run(["-s", serial, "shell", "rm -rf \(RemoteFiles.shellQuote(remote))"])
+    }
+
     func testARPParserIgnoresIncompleteEntries() {
         let output = """
         ? (192.168.1.50) at aa:bb:cc:dd:ee:ff on en0 ifscope [ethernet]
@@ -187,6 +293,9 @@ final class ParserTests: XCTestCase {
             XCTAssertTrue(message.contains("INSTALL_FAILED_INSUFFICIENT_STORAGE"))
         }
         XCTAssertThrowsError(try InstallOutput.requireSuccess("Not successful"))
+        let deprecated = InstallOutput.details(for: "Failure [INSTALL_FAILED_DEPRECATED_SDK_VERSION: App package must target at least SDK version 23, but found 22]")
+        XCTAssertTrue(deprecated.contains("outdated Android API"))
+        XCTAssertTrue(deprecated.contains("23, but found 22"))
     }
 
     func testPackageInstallAndUpdateDates() {

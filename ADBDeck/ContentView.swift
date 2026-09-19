@@ -31,6 +31,7 @@ struct ContentView: View {
     @State private var manager = DeviceManager()
     @State private var search = ""
     @State private var fileSearch = ""
+    @State private var isUploadTargeted = false
     @State private var isImporting = false
     @State private var appToRemove: DeviceApp?
     @State private var fileToDelete: RemoteFile?
@@ -103,6 +104,7 @@ struct ContentView: View {
 
     private var currentLocationName: String { RemoteFiles.locationName(for: manager.currentPath) }
     private var canModifyCurrentFolder: Bool { manager.currentPathAccess == .readWrite }
+    private var canUploadFiles: Bool { canModifyCurrentFolder && !manager.isWorking && !manager.isRefreshing && manager.selectedDevice?.adbState.isUsable == true }
     private var canPasteHere: Bool {
         guard canModifyCurrentFolder, let item = manager.fileClipboard else { return false }
         return item.file.path != RemoteFiles.joined(manager.currentPath, item.file.name)
@@ -772,6 +774,7 @@ struct ContentView: View {
             }
         }
         .listStyle(.sidebar)
+        .disabled(manager.isUploading)
         .safeAreaInset(edge: .bottom) {
             HStack(spacing: 10) {
                 if manager.isRefreshing || manager.isWorking {
@@ -820,6 +823,7 @@ struct ContentView: View {
                         ForEach(DetailMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                     }
                     .pickerStyle(.segmented)
+                    .disabled(manager.isUploading)
                     .labelsHidden()
                     .frame(width: 220)
                     .frame(height: 52)
@@ -859,7 +863,7 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .overlay(alignment: .bottom) {
             if let transfer = manager.transfer, !showLaunchers {
-                TransferBanner(transfer: transfer)
+                TransferBanner(transfer: transfer, cancel: manager.isUploading && !manager.isCancellingUpload ? { manager.cancelUpload() } : nil)
                     .frame(maxWidth: 620)
                     .padding(20)
             }
@@ -874,9 +878,11 @@ struct ContentView: View {
                     .help("Install an APK or ADB Deck app package")
                     .disabled(!device.adbState.isUsable || manager.isWorking)
                 } else {
+                    Button(action: chooseUpload) { Label("Upload Files", systemImage: "square.and.arrow.up").foregroundStyle(.blue) }
+                        .labelStyle(.titleAndIcon)
+                        .help("Upload files or folders to \(manager.currentPath). You can also drop them from Finder.")
+                        .disabled(!canUploadFiles)
                     Menu {
-                        Button(action: chooseUpload) { Label("Upload", systemImage: "square.and.arrow.up") }
-                            .disabled(!canModifyCurrentFolder)
                         Button {
                             newFolderName = ""
                             showNewFolder = true
@@ -1034,6 +1040,17 @@ struct ContentView: View {
             .frame(height: 58)
             .fixedSize(horizontal: false, vertical: true)
 
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.down.doc")
+                Text(manager.isUploading ? "Uploading to this folder — keep the device connected" : "Drop files or folders here to upload · Existing files are kept")
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 16)
+            .frame(height: 26)
+
             if let clipboard = manager.fileClipboard {
                 HStack(spacing: 10) {
                     Label("\(clipboard.operation.rawValue): \(clipboard.file.name)", systemImage: clipboard.operation == .copy ? "doc.on.doc" : "scissors")
@@ -1083,6 +1100,28 @@ struct ContentView: View {
             }
         }
         .onChange(of: manager.currentPath) { fileSearch = "" }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .contentShape(Rectangle())
+        .dropDestination(for: URL.self) { urls, _ in
+            guard canUploadFiles, !urls.isEmpty, urls.allSatisfy(\.isFileURL) else { return false }
+            manager.upload(urls)
+            return true
+        } isTargeted: { isUploadTargeted = $0 }
+        .overlay {
+            if isUploadTargeted {
+                VStack(spacing: 10) {
+                    Image(systemName: "square.and.arrow.up").font(.largeTitle)
+                    Text(canUploadFiles ? "Upload to \(currentLocationName)" : "Upload unavailable here")
+                        .font(.headline)
+                    Text(manager.currentPath).font(.caption.monospaced()).lineLimit(2)
+                }
+                .padding(24)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(.regularMaterial)
+                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.blue, style: StrokeStyle(lineWidth: 2, dash: [8])))
+                .allowsHitTesting(false)
+            }
+        }
         .animation(.smooth(duration: 0.2), value: manager.fileClipboard)
     }
 
@@ -1132,6 +1171,7 @@ struct ContentView: View {
                     .frame(width: 190)
             }
             .font(showPermission ? .caption : .body)
+            .disabled(manager.isUploading)
     }
 
     private var fileAccessColor: Color {
@@ -1198,9 +1238,10 @@ struct ContentView: View {
         panel.prompt = "Upload"
         panel.canChooseFiles = true
         panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        Task { await manager.upload(url) }
+        panel.allowsMultipleSelection = true
+        panel.treatsFilePackagesAsDirectories = true
+        guard panel.runModal() == .OK else { return }
+        manager.upload(panel.urls)
     }
 
     private func chooseDownloadFolder(for app: DeviceApp) {
@@ -1857,6 +1898,7 @@ private struct RemoteFileRow: View {
 
 private struct TransferBanner: View {
     let transfer: TransferStatus
+    var cancel: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 14) {
@@ -1874,6 +1916,12 @@ private struct TransferBanner: View {
                             .contentTransition(.numericText())
                     } else {
                         ProgressView().controlSize(.small)
+                    }
+                    if let cancel {
+                        Button("Cancel", action: cancel)
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .help("Stop this upload; completed files are kept")
                     }
                 }
                 if let fraction = transfer.fraction {

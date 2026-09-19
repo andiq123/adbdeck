@@ -3,6 +3,148 @@ import AppKit
 import Network
 import Observation
 import SwiftUI
+import Darwin
+
+struct UploadItem: Sendable {
+    let url: URL
+    let bytes: Int64
+    let largestFile: Int64
+    let isDirectory: Bool
+
+    static func prepare(_ urls: [URL]) throws -> [UploadItem] {
+        var names = Set<String>()
+        return try urls.map { url in
+            guard url.isFileURL, RemoteFiles.validName(url.lastPathComponent), names.insert(url.lastPathComponent).inserted else {
+                throw ADBError.commandFailed("Choose local files with distinct names. Nothing has been uploaded.")
+            }
+            var bytes: Int64 = 0
+            var largest: Int64 = 0
+            func measure(_ path: URL) throws -> Bool {
+                let info = try FileManager.default.attributesOfItem(atPath: path.path)
+                let type = info[.type] as? FileAttributeType
+                guard type == .typeRegular || type == .typeDirectory else {
+                    throw ADBError.commandFailed("\(path.lastPathComponent) is a link or special file. Select the original file instead.")
+                }
+                guard FileManager.default.isReadableFile(atPath: path.path) else {
+                    throw ADBError.commandFailed("macOS cannot read \(path.lastPathComponent). Check its permissions or download it from iCloud first.")
+                }
+                let size = type == .typeRegular ? (info[.size] as? NSNumber)?.int64Value ?? 0 : 0
+                let sum = bytes.addingReportingOverflow(size)
+                guard !sum.overflow else { throw ADBError.commandFailed("The selected files are too large to measure.") }
+                bytes = sum.partialValue
+                largest = max(largest, size)
+                return type == .typeDirectory
+            }
+            let directory = try measure(url)
+            if directory {
+                var enumerationError: Error?
+                guard let enumerator = FileManager.default.enumerator(at: url, includingPropertiesForKeys: nil, errorHandler: { _, error in
+                    enumerationError = error
+                    return false
+                }) else { throw ADBError.commandFailed("Cannot read folder \(url.lastPathComponent).") }
+                for case let child as URL in enumerator { _ = try measure(child) }
+                if let enumerationError { throw enumerationError }
+            }
+            return UploadItem(url: url, bytes: bytes, largestFile: largest, isDirectory: directory)
+        }
+    }
+
+    static func validateCapacity(total: Int64, largestFile: Int64, free: Int64, fileSystem: String) throws {
+        guard total <= free else {
+            throw ADBError.commandFailed("Not enough space in this destination: \(ByteCountFormatter.string(fromByteCount: total, countStyle: .file)) needed, \(ByteCountFormatter.string(fromByteCount: free, countStyle: .file)) available. Free space or choose another storage volume.")
+        }
+        if ["vfat", "msdos", "fat", "fat32"].contains(fileSystem.lowercased()), largestFile > 4_294_967_295 {
+            throw ADBError.commandFailed("This destination uses FAT32, which cannot store a single file of 4 GiB or larger. Choose internal storage or a compatible exFAT volume.")
+        }
+    }
+}
+
+// Native ADB does the file I/O. A PTY enables its progress output; only a 64 KiB log tail is retained.
+final class UploadProcess: @unchecked Sendable {
+    private let lock = NSLock()
+    private var process: Process?
+    private var cancelled = false
+
+    func cancel() {
+        lock.lock()
+        defer { lock.unlock() }
+        cancelled = true
+        if let process, process.isRunning { process.terminate() }
+    }
+
+    private func start(_ process: Process) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        if cancelled { throw CancellationError() }
+        try process.run()
+        self.process = process
+    }
+
+    static func fraction(in text: String) -> Double? {
+        let pattern = #"\[\s*([0-9]{1,3})%\]"#
+        guard let expression = try? NSRegularExpression(pattern: pattern),
+              let match = expression.matches(in: text, range: NSRange(text.startIndex..., in: text)).last,
+              let range = Range(match.range(at: 1), in: text),
+              let percent = Double(text[range]), (0...100).contains(percent) else { return nil }
+        return percent / 100
+    }
+
+    func run(binary: URL, arguments: [String], progress: @escaping @Sendable (Double) -> Void) async throws {
+        try await Task.detached(priority: .userInitiated) { [self] in
+            var master: Int32 = -1
+            var slave: Int32 = -1
+            var size = winsize(ws_row: 24, ws_col: 240, ws_xpixel: 0, ws_ypixel: 0)
+            guard openpty(&master, &slave, nil, nil, &size) == 0 else {
+                throw ADBError.commandFailed("Could not open the transfer progress channel.")
+            }
+            let terminal = FileHandle(fileDescriptor: slave, closeOnDealloc: true)
+            defer { close(master); try? terminal.close() }
+            let child = Process()
+            child.executableURL = binary
+            child.arguments = arguments
+            child.standardInput = FileHandle.nullDevice
+            child.standardOutput = terminal
+            child.standardError = terminal
+            var environment = ProcessInfo.processInfo.environment
+            environment["TERM"] = "xterm"
+            child.environment = environment
+            try start(child)
+            try terminal.close()
+            var tail = Data()
+            var buffer = [UInt8](repeating: 0, count: 8192)
+            var lastOutput = ProcessInfo.processInfo.systemUptime
+            var lastFraction: Double = -1
+            var timedOut = false
+            while true {
+                var descriptor = pollfd(fd: master, events: Int16(POLLIN), revents: 0)
+                let ready = poll(&descriptor, 1, 1000)
+                if ready < 0, errno == EINTR { continue }
+                if ready > 0 {
+                    let count = read(master, &buffer, buffer.count)
+                    if count <= 0 { break }
+                    lastOutput = ProcessInfo.processInfo.systemUptime
+                    tail.append(contentsOf: buffer.prefix(count))
+                    if tail.count > 65_536 { tail = Data(tail.suffix(65_536)) }
+                    if let value = Self.fraction(in: String(decoding: tail, as: UTF8.self)), value > lastFraction {
+                        lastFraction = value
+                        progress(value)
+                    }
+                } else if !child.isRunning { break }
+                if ProcessInfo.processInfo.systemUptime - lastOutput > 120 {
+                    timedOut = true
+                    cancel()
+                }
+            }
+            child.waitUntilExit()
+            if timedOut { throw ADBError.commandFailed("No transfer response for two minutes. Check the device and Wi-Fi connection, then retry.") }
+            let wasCancelled = lock.withLock { process = nil; return cancelled }
+            if wasCancelled { throw CancellationError() }
+            guard child.terminationStatus == 0 else {
+                throw ADBError.commandFailed("Upload failed (ADB exit \(child.terminationStatus)).\n\nDevice response:\n\(String(decoding: tail, as: UTF8.self))")
+            }
+        }.value
+    }
+}
 
 private final class OneShot: @unchecked Sendable {
     private let lock = NSLock()
@@ -1253,6 +1395,8 @@ enum InstallOutput {
             reason = "This app does not support the device’s processor architecture."
         } else if value.contains("install_failed_older_sdk") {
             reason = "This app requires a newer Android version than the device provides."
+        } else if value.contains("install_failed_deprecated_sdk_version") {
+            reason = "This app targets an outdated Android API that the device blocks for security. Download a newer version from the app’s official source; choosing a different processor architecture will not fix this. The device’s exact API requirement is shown below."
         } else if value.contains("install_failed_missing_split") {
             reason = "This app is missing required APK components. Install its complete .adbdeck package instead."
         } else if value.contains("install_failed_update_incompatible") {
@@ -1629,6 +1773,10 @@ final class DeviceManager {
     var apps: [DeviceApp] = []
     var isRefreshing = false
     var isWorking = false
+    var isUploading = false
+    var isCancellingUpload = false
+    @ObservationIgnored private var uploadTask: Task<Void, Never>?
+    @ObservationIgnored private var uploadProcess: UploadProcess?
     var statusMessage = "Ready"
     var showSystemApps = false
     var transfer: TransferStatus?
@@ -2652,7 +2800,7 @@ final class DeviceManager {
         defer { endActivity(ownsActivity) }
         do {
             let quoted = RemoteFiles.shellQuote(target)
-            let command = "if [ ! -r \(quoted) ]; then echo 'Permission denied' >&2; exit 1; fi; ls -la \(quoted) || exit $?; if [ -w \(quoted) ]; then echo '__ADBDECK_ACCESS__:rw'; else echo '__ADBDECK_ACCESS__:ro'; fi"
+            let command = "if [ ! -r \(quoted) ]; then echo 'Permission denied' >&2; exit 1; fi; ls -la \(quoted)/ || exit $?; if [ -w \(quoted) ]; then echo '__ADBDECK_ACCESS__:rw'; else echo '__ADBDECK_ACCESS__:ro'; fi"
             let output = try await adb.run(["-s", device.serial, "shell", command])
             guard selectedDevice?.id == device.id, currentPath == target else { return }
             currentPathAccess = output.contains("__ADBDECK_ACCESS__:rw") ? .readWrite : .readOnly
@@ -2728,23 +2876,132 @@ final class DeviceManager {
         }
     }
 
-    func upload(_ url: URL) async {
-        guard let device = selectedDevice, device.adbState.isUsable else { return }
-        let destination = RemoteFiles.joined(currentPath, url.lastPathComponent)
+    func upload(_ urls: [URL]) {
+        guard !isWorking, !isRefreshing, !urls.isEmpty, let device = selectedDevice, device.adbState.isUsable,
+              currentPathAccess == .readWrite else { return }
+        let destination = currentPath
         isWorking = true
-        transfer = TransferStatus(title: "Uploading \(url.lastPathComponent)", detail: "To \(currentPath)", fraction: nil)
-        statusMessage = "Uploading \(url.lastPathComponent)…"
+        isUploading = true
+        isCancellingUpload = false
+        lastError = nil
+        transfer = TransferStatus(title: "Preparing upload", detail: "Checking files for \(device.name) · \(destination)", fraction: nil)
+        uploadTask = Task { await performUpload(urls, to: destination, on: device) }
+    }
+
+    func cancelUpload() {
+        guard isUploading else { return }
+        isCancellingUpload = true
+        transfer?.detail = "Cancelling and removing the incomplete upload…"
+        uploadTask?.cancel()
+        uploadProcess?.cancel()
+    }
+
+    private func performUpload(_ urls: [URL], to destination: String, on device: AndroidDevice) async {
+        let scoped = urls.filter { $0.startAccessingSecurityScopedResource() }
+        var staging: String?
+        var completed = 0
+        defer {
+            scoped.forEach { $0.stopAccessingSecurityScopedResource() }
+            uploadProcess = nil
+            uploadTask = nil
+            transfer = nil
+            isUploading = false
+            isCancellingUpload = false
+            isWorking = false
+        }
         do {
-            _ = try await adb.runStreaming(["-s", device.serial, "push", url.path, destination], progress: progressHandler(from: 0, to: 1))
+            let items = try await Task.detached(priority: .userInitiated) { try UploadItem.prepare(urls) }.value
+            try Task.checkCancellation()
+            var total: Int64 = 0
+            for item in items {
+                let sum = total.addingReportingOverflow(item.bytes)
+                guard !sum.overflow else { throw ADBError.commandFailed("The selected files are too large to measure.") }
+                total = sum.partialValue
+            }
+            let quotedDestination = RemoteFiles.shellQuote(destination)
+            let capacityOutput = try await adb.run(["-s", device.serial, "shell", "timeout 10 df -k \(quotedDestination)"])
+            guard let capacity = StorageParser.capacity(capacityOutput) else {
+                throw ADBError.commandFailed("Cannot verify free space in \(destination). Reconnect the device and retry.")
+            }
+            let fs = (try? await adb.run(["-s", device.serial, "shell", "timeout 10 stat -f -c %T \(quotedDestination)"]))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            try UploadItem.validateCapacity(total: total, largestFile: items.map(\.largestFile).max() ?? 0, free: capacity.free, fileSystem: fs)
+            // Check every name before sending anything. Existing files are never overwritten implicitly.
+            for item in items {
+                try Task.checkCancellation()
+                let target = RemoteFiles.shellQuote(RemoteFiles.joined(destination, item.url.lastPathComponent))
+                _ = try await adb.run(["-s", device.serial, "shell", "if [ -e \(target) ] || [ -L \(target) ]; then echo 'Destination already exists. Rename the local file or choose another folder.' >&2; exit 1; fi"])
+            }
+            guard let binary = ADBClient.binaryURL else { throw ADBError.binaryMissing }
+            let started = Date()
+            var completedBytes: Int64 = 0
+            for (index, item) in items.enumerated() {
+                try Task.checkCancellation()
+                let temporary = RemoteFiles.joined(destination, ".adbdeck-upload-\(UUID().uuidString)")
+                _ = try await adb.run(["-s", device.serial, "shell", "mkdir \(RemoteFiles.shellQuote(temporary))"])
+                staging = temporary
+                let remote = RemoteFiles.joined(temporary, item.url.lastPathComponent)
+                let runner = UploadProcess()
+                uploadProcess = runner
+                let offset = completedBytes
+                let totalBytes = total
+                let title = "Uploading \(index + 1) of \(items.count) · \(item.url.lastPathComponent)"
+                transfer = TransferStatus(title: title, detail: "To \(device.name) · \(destination)", fraction: total > 0 ? Double(offset) / Double(total) : nil)
+                statusMessage = title
+                try Task.checkCancellation()
+                try await runner.run(binary: binary, arguments: ["-s", device.serial, "push", item.url.path, remote]) { [weak self] fraction in
+                    Task { @MainActor [weak self] in
+                        guard let self, self.uploadProcess === runner, !self.isCancellingUpload else { return }
+                        let sent = offset + Int64(Double(item.bytes) * min(1, max(0, fraction)))
+                        let elapsed = max(0.1, Date().timeIntervalSince(started))
+                        let rate = Double(sent) / elapsed
+                        let format: (Int64) -> String = { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
+                        self.transfer?.fraction = totalBytes > 0 ? min(0.99, Double(sent) / Double(totalBytes)) : nil
+                        self.transfer?.detail = "≈ \(format(sent)) of \(format(totalBytes)) · \(format(Int64(rate)))/s · \(device.name)"
+                    }
+                }
+                uploadProcess = nil
+                try Task.checkCancellation()
+                transfer?.detail = "Verifying \(item.url.lastPathComponent)…"
+                if !item.isDirectory {
+                    let size = try await adb.run(["-s", device.serial, "shell", "timeout 10 stat -c %s \(RemoteFiles.shellQuote(remote))"])
+                    guard Int64(size.trimmingCharacters(in: .whitespacesAndNewlines)) == item.bytes else {
+                        throw ADBError.commandFailed("Uploaded size does not match \(item.url.lastPathComponent). The incomplete file was not published. Retry with an unchanged local file.")
+                    }
+                }
+                try Task.checkCancellation()
+                let source = RemoteFiles.shellQuote(remote)
+                let target = RemoteFiles.shellQuote(RemoteFiles.joined(destination, item.url.lastPathComponent))
+                _ = try await adb.run(["-s", device.serial, "shell", "if [ -e \(target) ] || [ -L \(target) ]; then echo 'Destination already exists' >&2; exit 1; fi; mv -n -T \(source) \(target) && [ ! -e \(source) ]"])
+                completed += 1
+                completedBytes += item.bytes
+                _ = try await adb.run(["-s", device.serial, "shell", "rmdir \(RemoteFiles.shellQuote(temporary))"])
+                staging = nil
+            }
             transfer?.fraction = 1
-            transfer?.detail = "Refreshing files and storage"
-            statusMessage = "Uploaded \(url.lastPathComponent)"
-            await loadFiles()
-            await loadStorage()
-            try? await Task.sleep(for: .milliseconds(350))
-        } catch { report(error, operation: "Upload \(url.lastPathComponent)") }
-        transfer = nil
-        isWorking = false
+            transfer?.detail = "Uploaded \(completed) item\(completed == 1 ? "" : "s") to \(device.name)"
+            statusMessage = transfer?.detail ?? "Upload complete"
+        } catch {
+            var cleanupDetails = ""
+            if let temporary = staging {
+                do {
+                    _ = try await adb.run(["-s", device.serial, "shell", "timeout 10 rm -rf \(RemoteFiles.shellQuote(temporary))"])
+                } catch {
+                    cleanupDetails = "\n\nCould not remove \(temporary) on \(device.name). Reconnect and delete this temporary folder.\n\(error.localizedDescription)"
+                }
+            }
+            statusMessage = "\(error is CancellationError ? "Upload cancelled" : "Upload stopped") · \(completed) item(s) completed"
+            if !(error is CancellationError) || !cleanupDetails.isEmpty {
+                lastError = OperationFailure(operation: "Upload to \(device.name)", details: "\(completed) item(s) completed before this error.\n\n\(error.localizedDescription)\(cleanupDetails)", device: device)
+            }
+        }
+        let outcome = statusMessage
+        if selectedDevice?.id == device.id, currentPath == destination {
+            transfer?.detail = "Refreshing destination…"
+            await loadFiles(at: destination)
+            if let output = try? await adb.run(["-s", device.serial, "shell", "timeout 10 df -k /data"]),
+               let fresh = StorageParser.capacity(output, appBytes: storage?.apps ?? 0) { storage = fresh }
+        }
+        statusMessage = outcome
     }
 
     func download(_ file: RemoteFile, to directory: URL) async -> URL? {

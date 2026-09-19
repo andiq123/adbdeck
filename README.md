@@ -40,6 +40,12 @@ ADB Deck discovers ADB-enabled TVs, streaming boxes, phones, tablets, and car he
 
 Requires macOS 14 or later. Devices must be on the same network as the Mac.
 
+### Send files to a device
+
+Open **Files**, choose a writable folder, then click **Upload Files** or drop files and folders from Finder. Uploads show progress and transfer speed, support cancellation, and keep existing files untouched.
+
+Any file type is supported, including files over 4 GB, without loading the file into Mac memory. Available space and the destination filesystem still apply: FAT32 cannot hold a single file of 4 GiB or larger. Uploads are staged until complete; interrupted items are cleaned up when the device remains reachable.
+
 ## Build
 
 Open `ADBDeck.xcodeproj` in Xcode, or run:

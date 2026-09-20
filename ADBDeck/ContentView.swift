@@ -5,6 +5,8 @@ import UniformTypeIdentifiers
 @MainActor
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
+    @EnvironmentObject private var updater: AppUpdater
+    @State private var windowID = UUID()
 
     private enum DetailMode: String, CaseIterable { case apps = "Apps", files = "Files" }
     private enum AppSort: String, CaseIterable {
@@ -44,6 +46,10 @@ struct ContentView: View {
     @State private var appCategory = AppCategory.all
     @State private var showAddDevice = false
     @State private var manualAddress = ""
+    @State private var isPairingMode = false
+    @State private var pairingCode = ""
+    @State private var pairingMessage: String?
+    @State private var pairingError: String?
     @State private var showOtherDevices = false
     @State private var showOptimizeConfirmation = false
     @State private var showRemoteInput = false
@@ -121,13 +127,14 @@ struct ContentView: View {
 
     var body: some View {
         presentedContent
+            .onChange(of: manager.isWorking, initial: true) { updater.setDeviceBusy(manager.isWorking, window: windowID) }
+            .onDisappear { updater.setDeviceBusy(false, window: windowID) }
     }
 
     private var navigationContent: some View {
         NavigationSplitView {
             sidebar
-                .frame(width: 280)
-                .navigationSplitViewColumnWidth(280)
+                .navigationSplitViewColumnWidth(min: 250, ideal: 290, max: 380)
         } detail: {
             Group {
                 if let device = manager.selectedDevice {
@@ -135,10 +142,23 @@ struct ContentView: View {
                 } else if manager.isRefreshing {
                     DiscoveryLoadingView()
                 } else {
-                    ContentUnavailableView("No device selected", systemImage: "display.2", description: Text("Refresh to discover devices on this network."))
+                    ContentUnavailableView {
+                        Label("Connect your Android device", systemImage: "display.2")
+                    } description: {
+                        Text("Manage apps, transfer files, and control your screen. Connect over USB or add a wireless device to get started.")
+                            .frame(maxWidth: 390)
+                    } actions: {
+                        HStack {
+                            Button("Add Device", systemImage: "plus") { showAddDevice = true }
+                                .buttonStyle(.borderedProminent)
+                            Button("Refresh", systemImage: "arrow.clockwise") { Task { await manager.refresh() } }
+                                .buttonStyle(.bordered)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .navigationSplitViewStyle(.balanced)
         .background(.ultraThinMaterial)
@@ -153,9 +173,8 @@ struct ContentView: View {
             manager.screenCaptureError = nil
             manager.appInspection = nil
             manager.mediaSession = nil
-            Task { await reloadDetail() }
         }
-        .onChange(of: detailMode) { Task { await reloadDetail() } }
+        .task(id: "\(manager.selection ?? "")-\(detailMode.rawValue)") { await reloadDetail() }
         .task(id: "\(manager.selection ?? "")-\(scenePhase)") {
             guard scenePhase == .active else { return }
             while !Task.isCancelled {
@@ -383,22 +402,65 @@ struct ContentView: View {
     }
 
     private var addDeviceSheet: some View {
-            VStack(alignment: .leading, spacing: 18) {
-                Label("Add ADB device", systemImage: "plus.rectangle.on.rectangle")
-                    .font(.title2.bold())
-                TextField("192.168.1.100", text: $manualAddress)
+        VStack(alignment: .leading, spacing: 18) {
+            Label("Add Android device", systemImage: "plus.rectangle.on.rectangle")
+                .font(.title2.bold())
+            Picker("Connection", selection: $isPairingMode) {
+                Text("Connect").tag(false)
+                Text("Pair wirelessly").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .disabled(manager.isWorking)
+            Text(isPairingMode
+                 ? "On the device, open Developer options → Wireless debugging → Pair device with pairing code."
+                 : "Enter the address and connection port shown on the device. For USB or an emulator, enable debugging and use Refresh.")
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(isPairingMode ? "Pairing address and port" : "Device address").font(.headline)
+                TextField(isPairingMode ? "192.168.1.100:37001" : "192.168.1.100:5555 or android.local", text: $manualAddress)
                     .textFieldStyle(.roundedBorder)
-                    .onSubmit { addManualDevice() }
-                HStack {
-                    Spacer()
-                    Button("Cancel", role: .cancel) { showAddDevice = false }
-                    Button("Connect") { addManualDevice() }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(manualAddress.isEmpty)
+                    .onSubmit { if canSubmitDevice { addManualDevice() } }
+                if !manualAddress.isEmpty && ADBEndpoint(manualAddress, defaultPort: isPairingMode ? nil : 5555) == nil {
+                    Text("Enter a valid hostname or IP address and a port from 1–65535.")
+                        .font(.caption).foregroundStyle(.orange)
                 }
             }
-            .padding(24)
-            .frame(width: 390)
+            if isPairingMode {
+                SecureField("Six-digit pairing code", text: $pairingCode)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { if canSubmitDevice { addManualDevice() } }
+            }
+            if let pairingMessage {
+                Label(pairingMessage, systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let pairingError {
+                Label(pairingError, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                if manager.isWorking { ProgressView().controlSize(.small) }
+                Spacer()
+                Button("Cancel", role: .cancel) { showAddDevice = false }
+                    .keyboardShortcut(.cancelAction)
+                Button(isPairingMode ? "Pair" : "Connect") { addManualDevice() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!canSubmitDevice)
+            }
+        }
+        .padding(28)
+        .frame(width: 450)
+        .onDisappear { pairingCode = ""; pairingMessage = nil; pairingError = nil }
+    }
+
+    private var canSubmitDevice: Bool {
+        !manager.isWorking && !manager.isRefreshing &&
+        ADBEndpoint(manualAddress, defaultPort: isPairingMode ? nil : 5555) != nil &&
+        (!isPairingMode || (pairingCode.utf8.count == 6 && pairingCode.utf8.allSatisfy { (48...57).contains($0) }))
     }
 
     private var remoteInputSheet: some View {
@@ -749,6 +811,12 @@ struct ContentView: View {
     private var sidebar: some View {
         List(selection: $manager.selection) {
             Section("Android devices") {
+                if androidDevices.isEmpty {
+                    Label(manager.isRefreshing ? "Looking for devices…" : "No devices found", systemImage: "cable.connector")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 8)
+                }
                 ForEach(androidDevices) { device in
                     DeviceRow(device: device)
                         .tag(device.id)
@@ -780,7 +848,7 @@ struct ContentView: View {
                 if manager.isRefreshing || manager.isWorking {
                     ProgressView().controlSize(.small).frame(width: 10, height: 10)
                 } else {
-                    Circle().fill(.green).frame(width: 7, height: 7).frame(width: 10)
+                    Circle().fill(androidDevices.contains { $0.adbState.isUsable } ? Color.green : Color.secondary).frame(width: 7, height: 7).frame(width: 10)
                 }
                 Text(manager.statusMessage)
                     .font(.caption)
@@ -788,9 +856,13 @@ struct ContentView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer()
-                Text("v" + (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"))
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.tertiary)
+                Button(action: updater.checkForUpdates) {
+                    Image(systemName: "arrow.down.circle")
+                }
+                .buttonStyle(.plain)
+                .disabled(!updater.canCheckForUpdates)
+                .accessibilityLabel("Check for Updates")
+                .help(updater.isWaitingForDeviceOperations ? "Update ready. Waiting for device operations to finish." : "Check for Updates · v" + (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"))
             }
             .padding(12)
             .background(.thinMaterial)
@@ -799,12 +871,16 @@ struct ContentView: View {
         .toolbar {
             ToolbarItemGroup {
                 Button { showAddDevice = true } label: { Label("Add device", systemImage: "plus") }
+                    .help("Connect or pair an Android device")
+                    .disabled(manager.isWorking || manager.isRefreshing)
                 Button { Task { await manager.refresh() } } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                         .rotationEffect(.degrees(manager.isRefreshing ? 360 : 0))
                         .animation(manager.isRefreshing ? .linear(duration: 1).repeatForever(autoreverses: false) : .default, value: manager.isRefreshing)
                 }
-                .disabled(manager.isRefreshing)
+                .disabled(manager.isRefreshing || manager.isWorking)
+                .keyboardShortcut("r", modifiers: .command)
+                .help("Refresh USB and wireless devices")
             }
         }
     }
@@ -848,7 +924,9 @@ struct ContentView: View {
                          ? "Accept the debugging prompt on the device, then connect again."
                          : device.adbState == .offline
                          ? "The device is restarting or powered off. Turn it on if needed, then refresh."
-                         : "Enable USB or network debugging in Developer options, then connect.")
+                         : device.adbState == .unavailable
+                         ? "Boot Android normally to manage apps, files, and the screen. Then refresh devices."
+                         : "Enable USB or wireless debugging in Developer options. Pair newer wireless devices using Add Device, then connect.")
                 } actions: {
                     Button(device.adbState == .offline ? "Refresh Devices" : "Connect") {
                         Task {
@@ -857,7 +935,9 @@ struct ContentView: View {
                         }
                     }
                         .buttonStyle(.borderedProminent)
+                        .disabled(manager.isWorking || manager.isRefreshing)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -1195,9 +1275,27 @@ struct ContentView: View {
 
     private func addManualDevice() {
         let address = manualAddress
-        manualAddress = ""
-        showAddDevice = false
-        Task { await manager.addDevice(address) }
+        guard canSubmitDevice else { return }
+        if isPairingMode {
+            pairingError = nil
+            let code = pairingCode
+            Task {
+                do {
+                    try await manager.pairDevice(address, code: code)
+                    pairingCode = ""
+                    isPairingMode = false
+                    manualAddress = ""
+                    pairingMessage = "Paired. Enter the connection address and port from the main Wireless debugging screen."
+                } catch {
+                    pairingCode = ""
+                    pairingError = error.localizedDescription
+                }
+            }
+        } else {
+            manualAddress = ""
+            showAddDevice = false
+            Task { await manager.addDevice(address) }
+        }
     }
 
     private func sendRemoteText() {
@@ -1335,7 +1433,7 @@ private struct DeviceHeader: View {
                 Text(device.name).font(.title.bold()).lineLimit(1).minimumScaleFactor(0.75)
                 if !device.subtitle.isEmpty { Text(device.subtitle).foregroundStyle(.secondary) }
                 HStack(spacing: 12) {
-                    Label(device.id, systemImage: "network")
+                    Label(device.serial, systemImage: device.transportSerial == nil ? "wifi" : "cable.connector")
                     if let mac = device.macAddress { Label(mac, systemImage: "number") }
                     if device.hasCast { Label("Cast", systemImage: "airplayvideo") }
                 }
@@ -1370,9 +1468,10 @@ private struct DeviceHeader: View {
             .fixedSize()
             .buttonStyle(.borderedProminent)
             .tint(device.adbState == .connected ? .green : .accentColor)
+            .disabled(isBusy)
         }
         .padding(22)
-        .frame(height: 132)
+        .frame(minHeight: 132)
         .background(.regularMaterial)
     }
 }
@@ -1818,7 +1917,7 @@ private struct DiscoveryLoadingView: View {
         VStack(spacing: 14) {
             ProgressView().controlSize(.large)
             Text("Locating devices…").font(.title3.weight(.semibold))
-            Text("Scanning the local network and checking ADB availability")
+            Text("Checking USB, emulators, and wireless devices")
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

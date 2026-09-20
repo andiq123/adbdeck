@@ -16,11 +16,21 @@ jobs:
         run: |
           version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' ADBDeck/Info.plist)"
           test "${GITHUB_REF_NAME#v}" = "$version"
+      - name: Require update signing key
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: test -n "$SPARKLE_PRIVATE_KEY"
       - name: Test
         run: xcodebuild -project ADBDeck.xcodeproj -scheme ADBDeck -destination 'platform=macOS' test
       - name: Package
         run: ./scripts/package.sh
+      - name: Sign update feed
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: ./scripts/generate-appcast.sh
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/*.dmg dist/*.zip --generate-notes --latest --verify-tag
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.dmg dist/*.zip dist/appcast.xml --draft --generate-notes --verify-tag
+          gh release edit "$GITHUB_REF_NAME" --draft=false --latest

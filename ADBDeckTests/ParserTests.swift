@@ -2,6 +2,112 @@ import XCTest
 @testable import ADBDeck
 
 final class ParserTests: XCTestCase {
+    @MainActor
+    func testUpdateRelaunchWaitsForAllDeviceWindowsExactlyOnce() {
+        let updater = AppUpdater(startAutomatically: false)
+        XCTAssertTrue(updater.responds(to: NSSelectorFromString("updater:shouldPostponeRelaunchForUpdate:untilInvokingBlock:")))
+        let first = UUID()
+        let second = UUID()
+        var installs = 0
+        XCTAssertFalse(updater.postponeRelaunchIfBusy { installs += 1 })
+        updater.setDeviceBusy(true, window: first)
+        updater.setDeviceBusy(true, window: first)
+        updater.setDeviceBusy(true, window: second)
+        XCTAssertTrue(updater.postponeRelaunchIfBusy { installs += 1 })
+        XCTAssertTrue(updater.isWaitingForDeviceOperations)
+        updater.setDeviceBusy(false, window: first)
+        XCTAssertEqual(installs, 0)
+        updater.setDeviceBusy(false, window: second)
+        XCTAssertEqual(installs, 1)
+        XCTAssertFalse(updater.isWaitingForDeviceOperations)
+        updater.setDeviceBusy(false, window: second)
+        XCTAssertEqual(installs, 1)
+    }
+
+    func testCommandProcessDrainsPipesAndHonorsTimeoutAndCancellation() async throws {
+        let shell = URL(fileURLWithPath: "/bin/sh")
+        let (stdout, stderr) = try await CommandProcess().run(binary: shell, arguments: ["-c", "head -c 131072 /dev/zero; printf diagnostic >&2"], timeout: 5)
+        XCTAssertEqual(stdout.count, 131_072)
+        XCTAssertEqual(String(decoding: stderr, as: UTF8.self), "diagnostic")
+        do {
+            _ = try await CommandProcess().run(binary: URL(fileURLWithPath: "/bin/sleep"), arguments: ["10"], timeout: 0.1)
+            XCTFail("Timeout must terminate the command")
+        } catch { XCTAssertTrue(error.localizedDescription.contains("did not respond")) }
+        let task = Task { try await CommandProcess().run(binary: URL(fileURLWithPath: "/bin/sleep"), arguments: ["10"], timeout: 5) }
+        try await Task.sleep(for: .milliseconds(100))
+        task.cancel()
+        do { _ = try await task.value; XCTFail("Cancellation must reach the subprocess") }
+        catch is CancellationError { }
+        do {
+            _ = try await CommandProcess().run(binary: URL(fileURLWithPath: "/usr/bin/false"), arguments: ["pair", "host:1234", "123456"], timeout: 5)
+            XCTFail("Nonzero status must fail")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("<redacted>"))
+            XCTAssertFalse(error.localizedDescription.contains("123456"))
+        }
+    }
+
+    func testNetworkEndpointsAndTransportSerials() throws {
+        XCTAssertEqual(ADBEndpoint(" 192.168.1.2 ")?.serial, "192.168.1.2:5555")
+        XCTAssertEqual(ADBEndpoint("Android.local:37123")?.serial, "android.local:37123")
+        XCTAssertEqual(ADBEndpoint("[fe80::1%en0]:37123")?.serial, "[fe80::1%en0]:37123")
+        XCTAssertNil(ADBEndpoint("android.local", defaultPort: nil))
+        for invalid in ["", "192.168.1.2:0", "192.168.1.2:65536", "192.168.1.bad!.2", "999.1.1.1", "a..b", "-host", "host;reboot", "host/path", "host:abc", "[nope]:5555", "2001:db8::1"] {
+            XCTAssertNil(ADBEndpoint(invalid), invalid)
+        }
+        let devices = ADBDeviceList.parse("""
+        List of devices attached
+        R58M123 device product:phone model:Galaxy_S24 device:phone transport_id:1
+        emulator-5554 device product:sdk model:sdk_gphone64_arm64 transport_id:2
+        192.168.1.2:37123 unauthorized transport_id:3
+        [::1]:5555 offline transport_id:4
+        recovery-device recovery transport_id:5
+        * daemon started successfully
+        """)
+        XCTAssertEqual(devices.map(\.serial), ["R58M123", "emulator-5554", "192.168.1.2:37123", "[::1]:5555", "recovery-device"])
+        XCTAssertEqual(devices.map(\.adbState), [.connected, .connected, .unauthorized, .offline, .unavailable])
+        XCTAssertEqual(devices.first?.model, "Galaxy S24")
+        XCTAssertEqual(devices[2].id, "192.168.1.2:37123")
+        XCTAssertFalse(devices[4].adbState.isUsable)
+    }
+
+    func testDeviceBrandsDoNotOverrideFormFactor() {
+        for brand in ["Samsung", "Google", "Xiaomi", "Sony", "Amazon"] {
+            var device = AndroidDevice(id: "test", name: "Device", manufacturer: brand, model: "Device", adbState: .connected, isAndroidLikely: true, hasCast: false)
+            XCTAssertEqual(device.kind, .androidDevice, brand)
+            XCTAssertEqual(device.typeLabel, "Android Device", brand)
+            device.androidCharacteristics = "phone"
+            XCTAssertEqual(device.kind, .phone, brand)
+            XCTAssertEqual(device.typeLabel, "Android Phone", brand)
+            device.androidCharacteristics = "tablet"
+            XCTAssertEqual(device.kind, .tablet, brand)
+            XCTAssertEqual(device.typeLabel, "Android Tablet", brand)
+        }
+    }
+
+    func testMDNSSupportsIPv6AndRejectsInvalidPorts() {
+        let endpoints = NetworkDiscovery.parseADBMDNS("""
+        ipv6 _adb-tls-connect._tcp [fe80::1%en0]:39001
+        invalid _adb._tcp 192.168.1.4:0
+        pairing _adb-tls-pairing._tcp 192.168.1.4:39002
+        """)
+        XCTAssertEqual(endpoints.count, 1)
+        XCTAssertEqual(endpoints.first?.ip, "fe80::1%en0")
+        XCTAssertEqual(endpoints.first?.port, 39001)
+    }
+
+    func testOlderKernelMemoryFallback() throws {
+        let sample = try XCTUnwrap(PerformanceParser.sample("""
+        cpu 100 0 50 850 0 0 0 0
+        MemTotal: 1000 kB
+        MemFree: 100 kB
+        Buffers: 50 kB
+        Cached: 250 kB
+        """))
+        XCTAssertEqual(sample.memoryAvailable, 409_600)
+        XCTAssertEqual(PerformanceParser.performance(sample, after: nil).memoryUsed, 614_400)
+    }
+
     func testUploadUses64BitSizesAndChecksDestinationLimits() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -129,8 +235,6 @@ final class ParserTests: XCTestCase {
         XCTAssertEqual(ADBProgress.fraction(in: "[ 42%] pushing base.apk"), 0.42)
         XCTAssertEqual(ADBProgress.fraction(in: "[ 12%] pushing base.apk\r[ 87%] pushing base.apk"), 0.87)
         XCTAssertEqual(DeviceApp(packageName: "com.netflix.ninja", isSystem: false).symbol, "play.rectangle.fill")
-        XCTAssertTrue(ADBClient.needsServerRestart("failed to connect: No route to host"))
-        XCTAssertFalse(ADBClient.needsServerRestart("authentication rejected"))
     }
 
     func testStreamerTypeLabels() {

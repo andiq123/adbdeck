@@ -64,6 +64,22 @@
             </dict>
         </dict>
     </array>
+    <key>SUFeedURL</key>
+    <string>https://github.com/andiq123/adbdeck/releases/latest/download/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>WZ1OCG00B628/GZb9lUemSDqDDYgn2iD0Ke89KxW2X4=</string>
+    <key>SUVerifyUpdateBeforeExtraction</key>
+    <true/>
+    <key>SURequireSignedFeed</key>
+    <true/>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUAutomaticallyUpdate</key>
+    <true/>
+    <key>SUScheduledCheckInterval</key>
+    <integer>21600</integer>
+    <key>SUSendProfileInfo</key>
+    <false/>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
 </dict>

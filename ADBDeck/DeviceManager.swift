@@ -225,6 +225,7 @@ enum ADBState: String, Codable, Sendable {
     case offline = "Offline"
     case disabled = "ADB off"
     case unknown = "Unknown"
+    case unavailable = "Recovery or bootloader"
 
     var isUsable: Bool { self == .connected }
 }
@@ -271,9 +272,79 @@ enum DeviceKind: Sendable, Equatable {
     }
 }
 
+/// A network endpoint is separate from an opaque USB/emulator ADB serial.
+struct ADBEndpoint: Equatable, Sendable {
+    let host: String
+    let port: UInt16
+    var serial: String { host.contains(":") ? "[\(host)]:\(port)" : "\(host):\(port)" }
+    var deviceID: String { port == 5555 ? host : serial }
+
+    init?(_ address: String, defaultPort: UInt16? = 5555) {
+        let text = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        var host: String
+        var port = defaultPort
+        if text.hasPrefix("[") {
+            guard let end = text.firstIndex(of: "]") else { return nil }
+            host = String(text[text.index(after: text.startIndex)..<end])
+            let suffix = text[text.index(after: end)...]
+            if !suffix.isEmpty {
+                guard suffix.hasPrefix(":"), let parsed = UInt16(suffix.dropFirst()) else { return nil }
+                port = parsed
+            }
+            guard IPv6Address(String(host.split(separator: "%").first ?? "")) != nil else { return nil }
+        } else {
+            let parts = text.split(separator: ":", omittingEmptySubsequences: false)
+            guard parts.count <= 2 else { return nil }
+            host = String(parts[0])
+            if parts.count == 2 {
+                guard let parsed = UInt16(parts[1]) else { return nil }
+                port = parsed
+            }
+            if host.allSatisfy({ $0.isNumber || $0 == "." }) {
+                guard IPv4Address(host) != nil else { return nil }
+            } else {
+                let labels = host.split(separator: ".", omittingEmptySubsequences: false)
+                guard host.utf8.count <= 253, labels.allSatisfy({ label in
+                    !label.isEmpty && label.utf8.count <= 63 && label.first != "-" && label.last != "-" &&
+                    label.utf8.allSatisfy { (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || $0 == 45 }
+                }) else { return nil }
+                host = host.lowercased()
+            }
+        }
+        guard !host.isEmpty, let port, port > 0 else { return nil }
+        self.host = host
+        self.port = port
+    }
+}
+
+enum ADBDeviceList {
+    static func parse(_ output: String) -> [AndroidDevice] {
+        output.split(separator: "\n").compactMap { line in
+            let fields = line.split(whereSeparator: \.isWhitespace)
+            guard fields.count >= 2 else { return nil }
+            let state: ADBState
+            switch fields[1] {
+            case "device": state = .connected
+            case "unauthorized": state = .unauthorized
+            case "offline": state = .offline
+            case "recovery", "sideload", "bootloader": state = .unavailable
+            default: return nil
+            }
+            let serial = String(fields[0])
+            let endpoint = ADBEndpoint(serial, defaultPort: nil)
+            let model = fields.first { $0.hasPrefix("model:") }.map { String($0.dropFirst(6)).replacingOccurrences(of: "_", with: " ") }
+            return AndroidDevice(id: endpoint?.deviceID ?? serial, adbPort: endpoint?.port ?? 5555,
+                                 transportSerial: endpoint == nil ? serial : nil,
+                                 name: model ?? serial, manufacturer: "Unknown", model: model ?? "Unknown",
+                                 adbState: state, isAndroidLikely: true, hasCast: false)
+        }
+    }
+}
+
 struct AndroidDevice: Identifiable, Hashable, Sendable {
     let id: String
     var adbPort: UInt16 = 5555
+    var transportSerial: String? = nil
     var name: String
     var manufacturer: String
     var model: String
@@ -288,7 +359,9 @@ struct AndroidDevice: Identifiable, Hashable, Sendable {
     var openPorts: Set<UInt16> = []
     var isGateway = false
 
-    var serial: String { "\(id):\(adbPort)" }
+    var serial: String {
+        transportSerial ?? ADBEndpoint(id, defaultPort: adbPort)?.serial ?? "[\(id)]:\(adbPort)"
+    }
 
     var recommendedAPKArchitecture: String? {
         guard let primary = supportedABIs?.split(separator: ",").first.map(String.init) else { return nil }
@@ -310,12 +383,12 @@ struct AndroidDevice: Identifiable, Hashable, Sendable {
     var kind: DeviceKind {
         let text = "\(name) \(manufacturer) \(model)".lowercased()
         let characteristics = androidCharacteristics?.lowercased() ?? ""
-        if text.contains("fire") || text.contains("amazon") || text.contains("aft") { return .fireTV }
+        if model.uppercased().hasPrefix("AFT") || text.contains("fire tv") { return .fireTV }
         if characteristics.contains("automotive") { return .automotive }
         if characteristics.contains("watch") { return .watch }
         if characteristics.contains("tablet") { return .tablet }
         if characteristics.contains("phone") { return .phone }
-        if characteristics.contains("tv") || text.contains("tv") || text.contains("onn") || text.contains("xiaomi") || text.contains("mi ") { return .television }
+        if characteristics.contains("tv") || text.contains("tv") || text.contains("chromecast") || text.contains("shield") || text.contains("onn.") { return .television }
         if isAndroidLikely { return hasCast ? .television : .androidDevice }
         if hasCast { return .cast }
         if isGateway { return .router }
@@ -330,8 +403,16 @@ struct AndroidDevice: Identifiable, Hashable, Sendable {
     var kindColor: Color { kind.color }
 
     var typeLabel: String? {
+        switch kind {
+        case .phone: return "Android Phone"
+        case .tablet: return "Android Tablet"
+        case .watch: return "Wear OS"
+        case .automotive: return "Android Automotive"
+        case .androidDevice: return "Android Device"
+        default: break
+        }
         let text = "\(name) \(manufacturer) \(model)".lowercased()
-        if text.contains("amazon") || text.contains("fire tv") || text.contains("aft") { return "Fire TV" }
+        if kind == .fireTV { return "Fire TV" }
         if text.contains("onn") {
             if text.contains("plus") { return "onn. 4K Plus" }
             if text.contains("4k") { return "onn. 4K" }
@@ -379,7 +460,7 @@ struct AndroidDevice: Identifiable, Hashable, Sendable {
         case .available: 2
         case .offline: 3
         case .disabled where isAndroidLikely: 4
-        case .disabled, .unknown: 5
+        case .disabled, .unknown, .unavailable: 5
         }
     }
 
@@ -389,7 +470,7 @@ struct AndroidDevice: Identifiable, Hashable, Sendable {
         let rhsIdentified = rhs.manufacturer != "Unknown"
         if lhsIdentified != rhsIdentified { return lhsIdentified }
         if lhs.name != rhs.name { return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending }
-        return NetworkDiscovery.ipParts(lhs.id).lexicographicallyPrecedes(NetworkDiscovery.ipParts(rhs.id))
+        return lhs.id.localizedStandardCompare(rhs.id) == .orderedAscending
     }
 }
 
@@ -884,11 +965,13 @@ enum PerformanceParser {
         let values = cpuLine.split(whereSeparator: \.isWhitespace).dropFirst().prefix(8).compactMap { Int64($0) }
         guard values.count >= 5,
               let totalMemory = memory(named: "MemTotal:", in: lines),
-              let availableMemory = memory(named: "MemAvailable:", in: lines) else { return nil }
+              totalMemory > 0 else { return nil }
+        let availableMemory = memory(named: "MemAvailable:", in: lines) ??
+            ["MemFree:", "Buffers:", "Cached:"].compactMap { memory(named: $0, in: lines) }.reduce(0, +)
         return PerformanceSample(
             cpu: CPUTicks(total: values.reduce(0, +), idle: values[3] + values[4]),
             memoryTotal: totalMemory * 1024,
-            memoryAvailable: availableMemory * 1024
+            memoryAvailable: min(max(availableMemory, 0), totalMemory) * 1024
         )
     }
 
@@ -1418,6 +1501,80 @@ enum InstallOutput {
     }
 }
 
+/// Owns one child process so cancellation and timeouts cannot affect another ADB client.
+final class CommandProcess: @unchecked Sendable {
+    private let lock = NSLock()
+    private var process: Process?
+    private var cancelled = false
+    private var timedOut = false
+
+    func cancel(timedOut: Bool = false) {
+        lock.withLock {
+            cancelled = true
+            self.timedOut = self.timedOut || timedOut
+            guard let process, process.isRunning else { return }
+            process.terminate()
+            DispatchQueue.global().asyncAfter(deadline: .now() + 1) {
+                if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            }
+        }
+    }
+
+    func run(binary: URL, arguments: [String], timeout: TimeInterval,
+             progress: (@Sendable (Double) -> Void)? = nil) async throws -> (Data, Data) {
+        try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await Task.detached(priority: .userInitiated) { [self] in
+                let child = Process()
+                let stdout = Pipe()
+                let stderr = Pipe()
+                let output = ProcessBuffer()
+                let errors = ProcessBuffer()
+                child.executableURL = binary
+                child.arguments = arguments
+                child.standardInput = FileHandle.nullDevice
+                child.standardOutput = stdout
+                child.standardError = stderr
+                try lock.withLock {
+                    if cancelled { throw CancellationError() }
+                    try child.run()
+                    process = child
+                }
+                let deadline = DispatchWorkItem { self.cancel(timedOut: true) }
+                DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: deadline)
+                defer { deadline.cancel(); lock.withLock { process = nil } }
+                let readers = DispatchGroup()
+                for (pipe, buffer) in [(stdout, output), (stderr, errors)] {
+                    readers.enter()
+                    DispatchQueue.global().async {
+                        defer { readers.leave(); try? pipe.fileHandleForReading.close() }
+                        while true {
+                            let data = pipe.fileHandleForReading.availableData
+                            if data.isEmpty { break }
+                            buffer.append(data)
+                            if let progress, let value = ADBProgress.fraction(in: String(decoding: data, as: UTF8.self)) { progress(value) }
+                        }
+                    }
+                }
+                child.waitUntilExit()
+                await withCheckedContinuation { continuation in
+                    readers.notify(queue: .global()) { continuation.resume() }
+                }
+                let state = lock.withLock { (cancelled, timedOut) }
+                if state.1 { throw ADBError.commandFailed("ADB did not respond within \(Int(timeout)) seconds. Check the device connection and try again.") }
+                if state.0 { throw CancellationError() }
+                guard child.terminationStatus == 0 else {
+                    let safeArguments = arguments.first == "pair" ? Array(arguments.prefix(2)) + ["<redacted>"] : arguments
+                    throw ADBError.commandFailed("Command: adb \(safeArguments.joined(separator: " "))\nExit code: \(child.terminationStatus)\n\n\(errors.text)\(output.text)")
+                }
+                return (output.snapshot, errors.snapshot)
+            }.value
+        } onCancel: {
+            self.cancel()
+        }
+    }
+}
+
 struct ADBClient: Sendable {
     static var binaryURL: URL? {
         if let bundled = Bundle.main.url(forResource: "adb", withExtension: nil, subdirectory: "platform-tools") {
@@ -1429,95 +1586,24 @@ struct ADBClient: Sendable {
     }
 
     func run(_ arguments: [String]) async throws -> String {
-        try await runStreaming(arguments) { _ in }
+        try await runStreaming(arguments, timeout: 120)
     }
 
     func runData(_ arguments: [String]) async throws -> Data {
         guard let binary = Self.binaryURL else { throw ADBError.binaryMissing }
-        return try await Task.detached(priority: .userInitiated) {
-            let process = Process()
-            let stdout = Pipe()
-            let stderr = Pipe()
-            let output = ProcessBuffer()
-            let errors = ProcessBuffer()
-            process.executableURL = binary
-            process.arguments = arguments
-            process.standardOutput = stdout
-            process.standardError = stderr
-            stdout.fileHandleForReading.readabilityHandler = { handle in
-                let data = handle.availableData
-                if data.isEmpty { handle.readabilityHandler = nil } else { output.append(data) }
-            }
-            stderr.fileHandleForReading.readabilityHandler = { handle in
-                let data = handle.availableData
-                if data.isEmpty { handle.readabilityHandler = nil } else { errors.append(data) }
-            }
-            try process.run()
-            process.waitUntilExit()
-            stdout.fileHandleForReading.readabilityHandler = nil
-            stderr.fileHandleForReading.readabilityHandler = nil
-            output.append(stdout.fileHandleForReading.readDataToEndOfFile())
-            errors.append(stderr.fileHandleForReading.readDataToEndOfFile())
-            guard process.terminationStatus == 0 else {
-                throw ADBError.commandFailed(errors.text.nilIfEmpty ?? "ADB returned no details.")
-            }
-            return output.snapshot
-        }.value
+        return try await CommandProcess().run(binary: binary, arguments: arguments, timeout: 120).0
     }
 
     func connect(_ serial: String) async throws -> String {
-        do {
-            return try await connectOnce(serial)
-        } catch ADBError.commandFailed(let message) where Self.needsServerRestart(message) {
-            _ = try? await run(["kill-server"])
-            return try await connectOnce(serial)
-        }
-    }
-
-    private func connectOnce(_ serial: String) async throws -> String {
-        let output = try await run(["connect", serial])
+        let output = try await runStreaming(["connect", serial], timeout: 15)
         guard output.lowercased().contains("connected to") else { throw ADBError.commandFailed(output) }
         return output
     }
 
-    static func needsServerRestart(_ message: String) -> Bool {
-        let value = message.lowercased()
-        return ["no route to host", "device offline", "protocol fault", "connection reset", "cannot connect to daemon"]
-            .contains(where: value.contains)
-    }
-
-    func runStreaming(_ arguments: [String], progress: @escaping @Sendable (Double) -> Void) async throws -> String {
+    func runStreaming(_ arguments: [String], timeout: TimeInterval = 3600, progress: (@Sendable (Double) -> Void)? = nil) async throws -> String {
         guard let binary = Self.binaryURL else { throw ADBError.binaryMissing }
-        return try await Task.detached(priority: .userInitiated) {
-            let process = Process()
-            let stdout = Pipe()
-            let stderr = Pipe()
-            let buffer = ProcessBuffer()
-            process.executableURL = binary
-            process.arguments = arguments
-            process.standardOutput = stdout
-            process.standardError = stderr
-            let consume: @Sendable (FileHandle) -> Void = { handle in
-                let chunk = handle.availableData
-                guard !chunk.isEmpty else { handle.readabilityHandler = nil; return }
-                buffer.append(chunk)
-                if let value = ADBProgress.fraction(in: buffer.text) { progress(value) }
-            }
-            stdout.fileHandleForReading.readabilityHandler = consume
-            stderr.fileHandleForReading.readabilityHandler = consume
-            try process.run()
-            process.waitUntilExit()
-            stdout.fileHandleForReading.readabilityHandler = nil
-            stderr.fileHandleForReading.readabilityHandler = nil
-            buffer.append(stdout.fileHandleForReading.readDataToEndOfFile())
-            buffer.append(stderr.fileHandleForReading.readDataToEndOfFile())
-            let output = buffer.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard process.terminationStatus == 0 else {
-                let command = (["adb"] + arguments).joined(separator: " ")
-                throw ADBError.commandFailed("Command: \(command)\nExit code: \(process.terminationStatus)\n\n\(output.isEmpty ? "No output returned." : output)")
-            }
-            return output
-        }.value
+        let (stdout, stderr) = try await CommandProcess().run(binary: binary, arguments: arguments, timeout: timeout, progress: progress)
+        return String(decoding: stdout + stderr, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
@@ -1540,39 +1626,40 @@ struct NetworkDiscovery {
     }
 
     static func discover() async -> [Host] {
-        guard let address = localIPv4(), let prefix = address.split(separator: ".").dropLast().nilIfEmpty?.joined(separator: ".") else {
-            return []
-        }
+        let prefix = localIPv4()?.split(separator: ".").dropLast().joined(separator: ".")
 
         var serviceHosts: [String: Host] = [:]
         for endpoint in await adbMDNSServices() {
             serviceHosts[endpoint.ip] = Host(ip: endpoint.ip, adbOpen: true, adbPort: endpoint.port)
         }
         // ponytail: /24 batches cap open sockets; add adaptive subnet scheduling only if larger networks are required.
-        for batchStart in stride(from: 1, through: 254, by: 24) {
-            await withTaskGroup(of: Host?.self) { group in
-                for suffix in batchStart...min(batchStart + 23, 254) {
-                    let ip = "\(prefix).\(suffix)"
-                    group.addTask {
-                        async let adb = portOpen(ip: ip, port: 5555)
-                        async let cast = portOpen(ip: ip, port: 8008)
-                        let result = await (adb, cast)
-                        guard result.0 || result.1 else { return nil }
-                        return Host(ip: ip, adbOpen: result.0, castOpen: result.1, adbPort: result.0 ? 5555 : nil)
+        if let prefix {
+            for batchStart in stride(from: 1, through: 254, by: 24) {
+                await withTaskGroup(of: Host?.self) { group in
+                    for suffix in batchStart...min(batchStart + 23, 254) {
+                        let ip = "\(prefix).\(suffix)"
+                        group.addTask {
+                            async let adb = portOpen(ip: ip, port: 5555)
+                            async let cast = portOpen(ip: ip, port: 8008)
+                            let result = await (adb, cast)
+                            guard result.0 || result.1 else { return nil }
+                            return Host(ip: ip, adbOpen: result.0, castOpen: result.1, adbPort: result.0 ? 5555 : nil)
+                        }
                     }
-                }
-                for await host in group {
-                    guard let host else { continue }
-                    if var existing = serviceHosts[host.ip] {
-                        existing.adbOpen = existing.adbOpen || host.adbOpen
-                        existing.castOpen = existing.castOpen || host.castOpen
-                        existing.adbPort = existing.adbPort ?? host.adbPort
-                        serviceHosts[host.ip] = existing
-                    } else {
-                        serviceHosts[host.ip] = host
+                    for await host in group {
+                        guard let host else { continue }
+                        if var existing = serviceHosts[host.ip] {
+                            existing.adbOpen = existing.adbOpen || host.adbOpen
+                            existing.castOpen = existing.castOpen || host.castOpen
+                            existing.adbPort = existing.adbPort ?? host.adbPort
+                            serviceHosts[host.ip] = existing
+                        } else {
+                            serviceHosts[host.ip] = host
+                        }
                     }
                 }
             }
+
         }
 
         async let arpTask = arpTable()
@@ -1607,11 +1694,13 @@ struct NetworkDiscovery {
         defer { freeifaddrs(interfaces) }
         for pointer in sequence(first: first, next: { $0.pointee.ifa_next }) {
             let interface = pointer.pointee
-            guard interface.ifa_addr.pointee.sa_family == UInt8(AF_INET),
-                  String(cString: interface.ifa_name) == "en0" else { continue }
-            var address = interface.ifa_addr.pointee
+            guard let address = interface.ifa_addr,
+                  address.pointee.sa_family == UInt8(AF_INET),
+                  interface.ifa_flags & UInt32(IFF_UP) != 0,
+                  interface.ifa_flags & UInt32(IFF_LOOPBACK) == 0,
+                  String(cString: interface.ifa_name).hasPrefix("en") else { continue }
             var buffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-            getnameinfo(&address, socklen_t(interface.ifa_addr.pointee.sa_len), &buffer, socklen_t(buffer.count), nil, 0, NI_NUMERICHOST)
+            guard getnameinfo(address, socklen_t(address.pointee.sa_len), &buffer, socklen_t(buffer.count), nil, 0, NI_NUMERICHOST) == 0 else { continue }
             return String(cString: buffer)
         }
         return nil
@@ -1622,11 +1711,8 @@ struct NetworkDiscovery {
             let fields = line.split(whereSeparator: \.isWhitespace)
             guard fields.count >= 3,
                   fields[1] == "_adb._tcp" || fields[1] == "_adb-tls-connect._tcp",
-                  let separator = fields[2].lastIndex(of: ":"),
-                  let port = UInt16(fields[2][fields[2].index(after: separator)...]) else { return nil }
-            let ip = String(fields[2][..<separator])
-            guard ipParts(ip).count == 4 else { return nil }
-            return (ip, port)
+                  let endpoint = ADBEndpoint(String(fields[2]), defaultPort: nil) else { return nil }
+            return (endpoint.host, endpoint.port)
         }
     }
 
@@ -1813,23 +1899,33 @@ final class DeviceManager {
     private let adb = ADBClient()
     private var previousCPU: [String: CPUTicks] = [:]
     private var folderSizeRequestID = UUID()
+    private var appLoadRequestID = UUID()
     private var loadedAppsDeviceID: String?
     private var loadedSystemAppsSetting = false
 
     var selectedDevice: AndroidDevice? { devices.first { $0.id == selection } }
 
     func refresh() async {
-        guard !isRefreshing else { return }
+        guard !isRefreshing, !isWorking else { return }
         isRefreshing = true
         let ownsActivity = beginActivity("Locating devices", detail: "Scanning the local network")
-        defer { endActivity(ownsActivity) }
-        statusMessage = "Scanning the local network…"
-        let hosts = await NetworkDiscovery.discover()
+        defer { isRefreshing = false; endActivity(ownsActivity) }
+        statusMessage = "Checking USB, emulators, and the local network…"
+        async let discovery = NetworkDiscovery.discover()
         var results: [AndroidDevice] = []
+        do {
+            results = ADBDeviceList.parse(try await adb.run(["devices", "-l"]))
+            for index in results.indices {
+                if results[index].adbState.isUsable { await enrichWithADB(&results[index], reportFailure: false) }
+            }
+            devices = results.sorted(by: AndroidDevice.sidebarOrder)
+            if selection == nil { selection = devices.first?.id }
+        } catch { report(error, operation: "Read ADB devices") }
+        let hosts = await discovery
 
         for host in hosts {
             var device = AndroidDevice(
-                id: host.ip,
+                id: ADBEndpoint(host.ip.contains(":") ? "[\(host.ip)]" : host.ip, defaultPort: host.adbPort ?? 5555)?.deviceID ?? host.ip,
                 adbPort: host.adbPort ?? 5555,
                 name: host.castName ?? "Device \(host.ip.split(separator: ".").last ?? "")",
                 manufacturer: estimateBrand(from: [host.castName, host.castModel].compactMap { $0 }.joined(separator: " "), macAddress: host.mac),
@@ -1841,39 +1937,72 @@ final class DeviceManager {
                 openPorts: host.openPorts,
                 isGateway: host.isGateway
             )
+            if let index = results.firstIndex(where: { $0.serial == device.serial }) {
+                results[index].macAddress = host.mac
+                results[index].hasCast = host.castOpen
+                results[index].openPorts = host.openPorts
+                results[index].isGateway = host.isGateway
+                continue
+            }
             applyRememberedIdentity(to: &device)
-            if host.adbOpen { await enrichWithADB(&device) }
+            if host.adbOpen { await enrichWithADB(&device, reportFailure: false) }
             results.append(device)
         }
 
+        for address in UserDefaults.standard.stringArray(forKey: "manualEndpoints") ?? [] {
+            guard let endpoint = ADBEndpoint(address), !results.contains(where: { $0.serial == endpoint.serial }) else { continue }
+            var device = AndroidDevice(id: endpoint.deviceID, adbPort: endpoint.port, name: endpoint.host,
+                                       manufacturer: "Unknown", model: "Unknown", adbState: .offline, isAndroidLikely: true, hasCast: false)
+            applyRememberedIdentity(to: &device)
+            await enrichWithADB(&device, reportFailure: false)
+            results.append(device)
+        }
         results.sort(by: AndroidDevice.sidebarOrder)
         withAnimation(.snappy) { devices = results }
         if selection == nil || !results.contains(where: { $0.id == selection }) {
             selection = results.first { $0.isAndroidLikely }?.id ?? results.first?.id
         }
         isRefreshing = false
-        statusMessage = "Found \(results.count) network device\(results.count == 1 ? "" : "s")"
+        statusMessage = "Found \(results.count) device\(results.count == 1 ? "" : "s")"
         await loadApps()
     }
 
     func addDevice(_ address: String) async {
-        let ip = address.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: ":5555", with: "")
-        let octets = NetworkDiscovery.ipParts(ip)
-        guard octets.count == 4, octets.allSatisfy({ 0...255 ~= $0 }) else {
-            statusMessage = "Enter a valid IPv4 address"
+        guard !isWorking, !isRefreshing else { return }
+        guard let endpoint = ADBEndpoint(address) else {
+            report(ADBError.commandFailed("Enter an IP address or hostname, optionally followed by a port. Use [IPv6]:port for IPv6."), operation: "Add device")
             return
         }
-        let ownsActivity = beginActivity("Connecting to \(ip)", detail: "Checking ADB availability")
+        let ownsActivity = beginActivity("Connecting to \(endpoint.host)", detail: "Checking ADB availability")
         defer { endActivity(ownsActivity) }
-        var device = AndroidDevice(id: ip, name: "Android device", manufacturer: "Unknown", model: "Unknown", adbState: .available, isAndroidLikely: true, hasCast: false)
+        var device = AndroidDevice(id: endpoint.deviceID, adbPort: endpoint.port, name: endpoint.host, manufacturer: "Unknown", model: "Unknown", adbState: .available, isAndroidLikely: true, hasCast: false)
         await enrichWithADB(&device)
-        if let index = devices.firstIndex(where: { $0.id == ip }) { devices[index] = device } else { devices.append(device) }
-        selection = ip
+        if let index = devices.firstIndex(where: { $0.id == device.id }) { devices[index] = device } else { devices.append(device) }
+        devices.sort(by: AndroidDevice.sidebarOrder)
+        if device.adbState == .connected || device.adbState == .unauthorized {
+            var endpoints = UserDefaults.standard.stringArray(forKey: "manualEndpoints") ?? []
+            if !endpoints.contains(endpoint.serial) { endpoints.append(endpoint.serial) }
+            UserDefaults.standard.set(endpoints, forKey: "manualEndpoints")
+        }
+        selection = device.id
         await loadApps()
     }
 
+    func pairDevice(_ address: String, code: String) async throws {
+        guard !isWorking, !isRefreshing else { throw ADBError.commandFailed("Wait for the current operation to finish.") }
+        guard let endpoint = ADBEndpoint(address, defaultPort: nil), code.utf8.count == 6,
+              code.utf8.allSatisfy({ (48...57).contains($0) }) else {
+            throw ADBError.commandFailed("Enter the pairing address, port, and six-digit code shown on the device.")
+        }
+        let ownsActivity = beginActivity("Pairing device", detail: endpoint.host)
+        defer { endActivity(ownsActivity) }
+        let output = try await adb.runStreaming(["pair", endpoint.serial, code], timeout: 30)
+        guard output.localizedCaseInsensitiveContains("successfully paired") else { throw ADBError.commandFailed(output) }
+        statusMessage = "Paired. Connect using the port on the Wireless debugging screen."
+    }
+
     func connectSelected() async {
-        guard var device = selectedDevice else { return }
+        guard !isWorking, !isRefreshing, var device = selectedDevice else { return }
         let ownsActivity = beginActivity("Connecting to \(device.name)", detail: device.serial)
         defer { endActivity(ownsActivity) }
         await enrichWithADB(&device)
@@ -1882,13 +2011,16 @@ final class DeviceManager {
     }
 
     func loadApps() async {
+        let requestID = UUID()
+        appLoadRequestID = requestID
+        let includeSystem = showSystemApps
         guard let device = selectedDevice, device.adbState.isUsable else {
             storage = nil
             apps = []
             loadedAppsDeviceID = nil
             return
         }
-        let isSameList = loadedAppsDeviceID == device.id && loadedSystemAppsSetting == showSystemApps
+        let isSameList = loadedAppsDeviceID == device.id && loadedSystemAppsSetting == includeSystem
         let previousPackages = isSameList ? Set(apps.map(\.packageName)) : []
         let previousStorage = isSameList ? Dictionary(uniqueKeysWithValues: apps.compactMap { app in
             app.storage.map { (app.packageName, $0) }
@@ -1907,7 +2039,7 @@ final class DeviceManager {
             async let launcherTask = try? adb.run(["-s", device.serial, "shell", "cmd package query-activities --brief --components --query-flags 0x200 -a android.intent.action.MAIN -c android.intent.category.HOME"])
             async let currentLauncherTask = try? adb.run(["-s", device.serial, "shell", "cmd package resolve-activity --brief --components -a android.intent.action.MAIN -c android.intent.category.HOME"])
             async let disabledTask = try? adb.run(["-s", device.serial, "shell", "pm list packages -d --user 0"])
-            let system = showSystemApps ? try await packages(on: device, system: true) : []
+            let system = includeSystem ? try await packages(on: device, system: true) : []
             let user = try await userTask
             let metadataOutput: String? = await metadataTask
             let launcherOutput: String? = await launcherTask
@@ -1915,7 +2047,7 @@ final class DeviceManager {
             let disabledOutput: String? = await disabledTask
             let dates = PackageMetadataParser.dates(metadataOutput ?? "")
             let disabled = Set((disabledOutput ?? "").split(separator: "\n").compactMap { $0.hasPrefix("package:") ? String($0.dropFirst(8)) : nil })
-            guard selectedDevice?.id == device.id else { return }
+            guard selectedDevice?.id == device.id, appLoadRequestID == requestID, !Task.isCancelled else { return }
             launcherPackages = Set(LauncherParser.components(launcherOutput ?? "").map { String($0.split(separator: "/", maxSplits: 1).first ?? "") })
             currentLauncher = LauncherParser.components(currentLauncherOutput ?? "").first
             var loaded: [DeviceApp] = user + system
@@ -1930,7 +2062,7 @@ final class DeviceManager {
             } catch {
                 report(error, operation: "Read storage")
             }
-            guard selectedDevice?.id == device.id else { return }
+            guard selectedDevice?.id == device.id, appLoadRequestID == requestID, !Task.isCancelled else { return }
             for index in loaded.indices {
                 loaded[index].storage = snapshot?.apps[loaded[index].packageName] ?? previousStorage[loaded[index].packageName]
             }
@@ -1942,17 +2074,20 @@ final class DeviceManager {
                 recentlyAddedApps.formUnion(added)
             }
             loadedAppsDeviceID = device.id
-            loadedSystemAppsSetting = showSystemApps
+            loadedSystemAppsSetting = includeSystem
             statusMessage = "Loaded \(apps.count) app\(apps.count == 1 ? "" : "s")"
             if !added.isEmpty {
                 statusMessage = "Added \(added.count) app\(added.count == 1 ? "" : "s")"
                 Task {
                     try? await Task.sleep(for: .seconds(3))
-                    guard selectedDevice?.id == device.id else { return }
+                    guard selectedDevice?.id == device.id, appLoadRequestID == requestID, !Task.isCancelled else { return }
                     withAnimation(.smooth) { recentlyAddedApps.subtract(added) }
                 }
             }
-        } catch { report(error, operation: "Load apps") }
+        } catch {
+            guard selectedDevice?.id == device.id, appLoadRequestID == requestID else { return }
+            report(error, operation: "Load apps")
+        }
     }
 
     @discardableResult
@@ -1985,7 +2120,7 @@ final class DeviceManager {
             return
         }
         do {
-            let output = try await adb.run(["-s", device.serial, "shell", "grep '^cpu ' /proc/stat; grep -E '^(MemTotal|MemAvailable):' /proc/meminfo; dumpsys power | grep -E 'mWakefulness=|Display Power: state=' || true"])
+            let output = try await adb.run(["-s", device.serial, "shell", "grep '^cpu ' /proc/stat; grep -E '^(MemTotal|MemAvailable|MemFree|Buffers|Cached):' /proc/meminfo; dumpsys power | grep -E 'mWakefulness=|Display Power: state=' || true"])
             guard let sample = PerformanceParser.sample(output) else {
                 throw ADBError.commandFailed("Android returned an unsupported CPU or memory report.\n\n\(output)")
             }
@@ -1995,6 +2130,7 @@ final class DeviceManager {
             previousCPU[device.id] = sample.cpu
             performanceError = nil
         } catch {
+            guard selectedDevice?.id == device.id else { return }
             performance = nil
             performanceError = error.localizedDescription
         }
@@ -2984,7 +3120,10 @@ final class DeviceManager {
             var cleanupDetails = ""
             if let temporary = staging {
                 do {
-                    _ = try await adb.run(["-s", device.serial, "shell", "timeout 10 rm -rf \(RemoteFiles.shellQuote(temporary))"])
+                    // Cleanup must outlive cancellation of the transfer task.
+                    _ = try await Task.detached { [adb] in
+                        try await adb.run(["-s", device.serial, "shell", "timeout 10 rm -rf \(RemoteFiles.shellQuote(temporary))"])
+                    }.value
                 } catch {
                     cleanupDetails = "\n\nCould not remove \(temporary) on \(device.name). Reconnect and delete this temporary folder.\n\(error.localizedDescription)"
                 }
@@ -2995,12 +3134,15 @@ final class DeviceManager {
             }
         }
         let outcome = statusMessage
-        if selectedDevice?.id == device.id, currentPath == destination {
-            transfer?.detail = "Refreshing destination…"
-            await loadFiles(at: destination)
-            if let output = try? await adb.run(["-s", device.serial, "shell", "timeout 10 df -k /data"]),
-               let fresh = StorageParser.capacity(output, appBytes: storage?.apps ?? 0) { storage = fresh }
-        }
+        await Task { @MainActor in
+            if selectedDevice?.id == device.id, currentPath == destination {
+                transfer?.detail = "Refreshing destination…"
+                await loadFiles(at: destination)
+                if let output = try? await adb.run(["-s", device.serial, "shell", "timeout 10 df -k /data"]),
+                   selectedDevice?.id == device.id,
+                   let fresh = StorageParser.capacity(output, appBytes: storage?.apps ?? 0) { storage = fresh }
+            }
+        }.value
         statusMessage = outcome
     }
 
@@ -3052,23 +3194,30 @@ final class DeviceManager {
         return true
     }
 
-    private func enrichWithADB(_ device: inout AndroidDevice) async {
+    private func enrichWithADB(_ device: inout AndroidDevice, reportFailure: Bool = true) async {
         do {
             let serial = device.serial
-            let connection = try await adb.connect(serial)
-            let list = try await adb.run(["devices", "-l"])
-            if list.split(separator: "\n").contains(where: { $0.hasPrefix(serial) && $0.contains("unauthorized") }) {
-                device.adbState = .unauthorized
-                statusMessage = "Approve ADB on \(device.name)"
+            var list = ADBDeviceList.parse(try await adb.run(["devices", "-l"]))
+            if !list.contains(where: { $0.serial == serial }), device.transportSerial == nil {
+                do { _ = try await adb.connect(serial) }
+                catch {
+                    list = ADBDeviceList.parse((try? await adb.run(["devices", "-l"])) ?? "")
+                    guard list.contains(where: { $0.serial == serial }) else { throw error }
+                }
+                list = ADBDeviceList.parse(try await adb.run(["devices", "-l"]))
+            }
+            guard let transport = list.first(where: { $0.serial == serial }) else {
+                device.adbState = .offline
                 return
             }
-            guard list.split(separator: "\n").contains(where: { $0.hasPrefix(serial) && $0.contains("device") }) else {
-                device.adbState = connection.contains("connected") ? .available : .unknown
+            device.adbState = transport.adbState
+            guard transport.adbState.isUsable else {
+                if transport.adbState == .unauthorized { statusMessage = "Approve ADB on \(device.name)" }
                 return
             }
             device.adbState = .connected
             device.isAndroidLikely = true
-            let props = try await adb.run(["-s", serial, "shell", "printf '%s|%s|%s|%s|%s|%s|%s' \"$(getprop ro.product.manufacturer)\" \"$(getprop ro.product.model)\" \"$(getprop ro.product.device)\" \"$(getprop ro.product.cpu.abilist)\" \"$(getprop ro.build.version.release)\" \"$(getprop ro.build.version.sdk)\" \"$(getprop ro.build.characteristics)\""])
+            let props = try await adb.run(["-s", serial, "shell", "printf '%s|%s|%s|%s|%s|%s|%s' \"$(getprop ro.product.manufacturer)\" \"$(getprop ro.product.model)\" \"$(getprop ro.product.device)\" \"$(getprop ro.product.cpu.abilist | grep . || getprop ro.product.cpu.abi)\" \"$(getprop ro.build.version.release)\" \"$(getprop ro.build.version.sdk)\" \"$(getprop ro.build.characteristics)\""])
             let parts = props.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
             if parts.count == 7 {
                 device.manufacturer = parts[0].isEmpty ? device.manufacturer : parts[0]
@@ -3081,12 +3230,13 @@ final class DeviceManager {
                 rememberIdentity(device)
             }
         } catch {
-            device.adbState = .available
-            report(error, operation: "Connect to \(device.id)")
+            device.adbState = .offline
+            if reportFailure { report(error, operation: "Connect to \(device.id)") }
         }
     }
 
     private func report(_ error: Error, operation: String) {
+        guard !(error is CancellationError) else { return }
         let details = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
         lastError = OperationFailure(operation: operation, details: details.isEmpty ? "The operation failed without an error message." : details, device: selectedDevice)
         statusMessage = "\(operation) failed"
@@ -3123,9 +3273,9 @@ final class DeviceManager {
     private func storageSnapshot(on device: AndroidDevice, apps listedApps: [DeviceApp]) async throws -> (device: DeviceStorage, apps: [String: AppStorage]) {
         let serial = device.serial
         async let capacityTask = adb.run(["-s", serial, "shell", "df -k /data"])
-        async let statsTask = adb.run(["-s", serial, "shell", "dumpsys diskstats"])
+        async let statsTask = try? adb.run(["-s", serial, "shell", "dumpsys diskstats"])
         let (capacityOutput, statsOutput) = try await (capacityTask, statsTask)
-        var appStorage = StorageParser.appStorage(statsOutput)
+        var appStorage = StorageParser.appStorage(statsOutput ?? "")
         let missing = listedApps.filter { !$0.isSystem && appStorage[$0.packageName] == nil }.map(\.packageName)
         if !missing.isEmpty {
             let commands = missing.map {

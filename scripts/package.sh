@@ -11,7 +11,7 @@ identity="${SIGN_IDENTITY:--}"
 
 cd "$project_root"
 xcodebuild -project ADBDeck.xcodeproj -scheme ADBDeck -configuration Release \
-  -derivedDataPath "$build_root" CODE_SIGNING_ALLOWED=NO build
+  -derivedDataPath "$build_root" CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=NO ARCHS="arm64 x86_64" build
 
 mkdir -p "$dist"
 for target in "$app" "$dist/ADB-Deck-$version.zip" "$dist/ADB-Deck-$version.dmg"; do

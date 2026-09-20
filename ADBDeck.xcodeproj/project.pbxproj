@@ -14,6 +14,8 @@
 		C1A5F1A12C5A4DB987EE2001 /* ADBDeckFireTVHelper.apk in Resources */ = {isa = PBXBuildFile; fileRef = C1A5F1A12C5A4DB987EE2002 /* ADBDeckFireTVHelper.apk */; };
 		D1E9A10DD0315150F9588631 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 910F1CEDE4182526BFA4DF4D /* Assets.xcassets */; };
 		F3AD823F4214624BF41BBFD7 /* ParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E7AA3ADBFA7CAA70322FA00 /* ParserTests.swift */; };
+		AABB00000000000000000001 /* AppUpdater.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000000002 /* AppUpdater.swift */; };
+		AABB00000000000000000003 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = AABB00000000000000000004 /* Sparkle */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -37,7 +39,17 @@
 		ACCB9439F0E5D8FA414F5E46 /* ADBDeckApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ADBDeckApp.swift; sourceTree = "<group>"; };
 		DE62FFBA410C26536D1B047F /* platform-tools */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "platform-tools"; path = "ADBDeck/Resources/platform-tools"; sourceTree = SOURCE_ROOT; };
 		C1A5F1A12C5A4DB987EE2002 /* ADBDeckFireTVHelper.apk */ = {isa = PBXFileReference; lastKnownFileType = file; path = Resources/ADBDeckFireTVHelper.apk; sourceTree = "<group>"; };
+		AABB00000000000000000002 /* AppUpdater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdater.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		AABB00000000000000000005 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (AABB00000000000000000003 /* Sparkle in Frameworks */,);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
 		1307BB2C9D09EC0862C0FEF1 = {
@@ -54,6 +66,7 @@
 			isa = PBXGroup;
 			children = (
 				ACCB9439F0E5D8FA414F5E46 /* ADBDeckApp.swift */,
+				AABB00000000000000000002 /* AppUpdater.swift */,
 				C1A5F1A12C5A4DB987EE2002 /* ADBDeckFireTVHelper.apk */,
 				910F1CEDE4182526BFA4DF4D /* Assets.xcassets */,
 				8419BF14054FB18426599454 /* ContentView.swift */,
@@ -88,6 +101,7 @@
 			buildConfigurationList = B1FE75AC5F5AF47972DF129B /* Build configuration list for PBXNativeTarget "ADBDeck" */;
 			buildPhases = (
 				95E84DC534DB26377D44FA2D /* Sources */,
+				AABB00000000000000000005 /* Frameworks */,
 				F69A14F0420188AE118AE9F2 /* Resources */,
 			);
 			buildRules = (
@@ -96,6 +110,7 @@
 			);
 			name = ADBDeck;
 			packageProductDependencies = (
+				AABB00000000000000000004 /* Sparkle */,
 			);
 			productName = ADBDeck;
 			productReference = 8E4A078E00973FE1C46422C0 /* ADBDeck.app */;
@@ -143,6 +158,7 @@
 			mainGroup = 1307BB2C9D09EC0862C0FEF1;
 			minimizedProjectReferenceProxies = 1;
 			productRefGroup = C4DC7605B4F4CB7C085FC15D /* Products */;
+			packageReferences = (AABB00000000000000000006 /* Sparkle */,);
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -171,6 +187,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				9BC8AB8D51E855AF9837CDB8 /* ADBDeckApp.swift in Sources */,
+				AABB00000000000000000001 /* AppUpdater.swift in Sources */,
 				5892CF00245A5013783F6AFC /* ContentView.swift in Sources */,
 				9CA168288B78D6E8431D71B6 /* DeviceManager.swift in Sources */,
 			);
@@ -193,6 +210,22 @@
 			targetProxy = 24687D420C188AE08EA0CD78 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		AABB00000000000000000006 /* Sparkle */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = { kind = exactVersion; version = 2.10.0; };
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		AABB00000000000000000004 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AABB00000000000000000006 /* Sparkle */;
+			productName = Sparkle;
+		};
+/* End XCSwiftPackageProductDependency section */
 
 /* Begin XCBuildConfiguration section */
 		298006881086A777B70D89D4 /* Release */ = {

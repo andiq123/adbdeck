@@ -356,6 +356,7 @@ struct AndroidDevice: Identifiable, Hashable, Sendable {
     var androidVersion: String? = nil
     var apiLevel: String? = nil
     var androidCharacteristics: String? = nil
+    var connectionError: String? = nil
     var openPorts: Set<UInt16> = []
     var isGateway = false
 
@@ -1942,6 +1943,8 @@ final class DeviceManager {
                 results[index].hasCast = host.castOpen
                 results[index].openPorts = host.openPorts
                 results[index].isGateway = host.isGateway
+                applyRememberedIdentity(to: &results[index])
+                rememberIdentity(results[index])
                 continue
             }
             applyRememberedIdentity(to: &device)
@@ -2008,6 +2011,21 @@ final class DeviceManager {
         await enrichWithADB(&device)
         if let index = devices.firstIndex(where: { $0.id == device.id }) { devices[index] = device }
         await loadApps()
+    }
+
+    func restartADBServer() async {
+        guard !isWorking, !isRefreshing else { return }
+        let ownsActivity = beginActivity("Restarting ADB", detail: "Reconnecting device transports")
+        do {
+            _ = try await adb.runStreaming(["kill-server"], timeout: 15)
+            _ = try await adb.runStreaming(["start-server"], timeout: 15)
+        } catch {
+            report(error, operation: "Restart ADB")
+            endActivity(ownsActivity)
+            return
+        }
+        endActivity(ownsActivity)
+        await refresh()
     }
 
     func loadApps() async {
@@ -3195,14 +3213,19 @@ final class DeviceManager {
     }
 
     private func enrichWithADB(_ device: inout AndroidDevice, reportFailure: Bool = true) async {
+        device.connectionError = nil
         do {
             let serial = device.serial
             var list = ADBDeviceList.parse(try await adb.run(["devices", "-l"]))
-            if !list.contains(where: { $0.serial == serial }), device.transportSerial == nil {
+            if device.transportSerial == nil,
+               !list.contains(where: { $0.serial == serial && $0.adbState != .offline }) {
+                if list.contains(where: { $0.serial == serial && $0.adbState == .offline }) {
+                    _ = try await adb.runStreaming(["disconnect", serial], timeout: 15)
+                }
                 do { _ = try await adb.connect(serial) }
                 catch {
                     list = ADBDeviceList.parse((try? await adb.run(["devices", "-l"])) ?? "")
-                    guard list.contains(where: { $0.serial == serial }) else { throw error }
+                    guard list.contains(where: { $0.serial == serial && $0.adbState != .offline }) else { throw error }
                 }
                 list = ADBDeviceList.parse(try await adb.run(["devices", "-l"]))
             }
@@ -3231,6 +3254,7 @@ final class DeviceManager {
             }
         } catch {
             device.adbState = .offline
+            device.connectionError = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
             if reportFailure { report(error, operation: "Connect to \(device.id)") }
         }
     }

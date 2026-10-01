@@ -920,22 +920,29 @@ struct ContentView: View {
                 ContentUnavailableView {
                     Label(device.adbState.rawValue, systemImage: device.adbState == .unauthorized ? "checkmark.shield" : "cable.connector")
                 } description: {
-                    Text(device.adbState == .unauthorized
+                    Text(device.connectionError ?? (device.adbState == .unauthorized
                          ? "Accept the debugging prompt on the device, then connect again."
                          : device.adbState == .offline
-                         ? "The device is restarting or powered off. Turn it on if needed, then refresh."
+                         ? "ADB could not connect. Check the device’s network and debugging settings, then reconnect."
                          : device.adbState == .unavailable
                          ? "Boot Android normally to manage apps, files, and the screen. Then refresh devices."
-                         : "Enable USB or wireless debugging in Developer options. Pair newer wireless devices using Add Device, then connect.")
+                         : "Enable USB or wireless debugging in Developer options. Pair newer wireless devices using Add Device, then connect."))
+                        .textSelection(.enabled)
                 } actions: {
-                    Button(device.adbState == .offline ? "Refresh Devices" : "Connect") {
-                        Task {
-                            if device.adbState == .offline { await manager.refresh() }
-                            else { await manager.connectSelected() }
-                        }
+                    Button(device.adbState == .offline ? "Reconnect" : "Connect") {
+                        Task { await manager.connectSelected() }
                     }
                         .buttonStyle(.borderedProminent)
                         .disabled(manager.isWorking || manager.isRefreshing)
+                    if device.connectionError?.localizedCaseInsensitiveContains("No route to host") == true {
+                        Button("Restart ADB and Refresh") {
+                            Task { await manager.restartADBServer() }
+                        }
+                        .disabled(manager.isWorking || manager.isRefreshing)
+                        Text("Restarts the Mac’s shared ADB server and briefly disconnects all ADB devices. If it persists, check Local Network access in System Settings.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }

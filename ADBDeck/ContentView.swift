@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 
 @MainActor
 struct ContentView: View {
+    let viewportHeight: CGFloat
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var updater: AppUpdater
     @State private var windowID = UUID()
@@ -135,6 +136,7 @@ struct ContentView: View {
         NavigationSplitView {
             sidebar
                 .navigationSplitViewColumnWidth(min: 250, ideal: 290, max: 380)
+                .frame(height: viewportHeight)
         } detail: {
             Group {
                 if let device = manager.selectedDevice {
@@ -159,8 +161,10 @@ struct ContentView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(height: viewportHeight)
         }
         .navigationSplitViewStyle(.balanced)
+        .toolbarBackground(.visible, for: .windowToolbar)
         .background(.ultraThinMaterial)
         .task { await manager.refresh() }
         .onChange(of: manager.selection) {
@@ -809,41 +813,43 @@ struct ContentView: View {
     }
 
     private var sidebar: some View {
-        List(selection: $manager.selection) {
-            Section("Android devices") {
-                if androidDevices.isEmpty {
-                    Label(manager.isRefreshing ? "Looking for devices…" : "No devices found", systemImage: "cable.connector")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .padding(.vertical, 8)
+        VStack(spacing: 0) {
+            List(selection: $manager.selection) {
+                Section("Android devices") {
+                    if androidDevices.isEmpty {
+                        Label(manager.isRefreshing ? "Looking for devices…" : "No devices found", systemImage: "cable.connector")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .padding(.vertical, 8)
+                    }
+                    ForEach(androidDevices) { device in
+                        DeviceRow(device: device)
+                            .tag(device.id)
+                    }
                 }
-                ForEach(androidDevices) { device in
-                    DeviceRow(device: device)
-                        .tag(device.id)
-                }
-            }
-            if !otherDevices.isEmpty {
-                Section {
-                    DisclosureGroup(isExpanded: $showOtherDevices) {
-                        ForEach(otherDevices) { device in
-                            DeviceRow(device: device)
-                                .tag(device.id)
-                        }
-                    } label: {
-                        HStack {
-                            Label("Other network devices", systemImage: "eye.slash").lineLimit(1)
-                            Spacer()
-                            Text("\(otherDevices.count)")
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
+                if !otherDevices.isEmpty {
+                    Section {
+                        DisclosureGroup(isExpanded: $showOtherDevices) {
+                            ForEach(otherDevices) { device in
+                                DeviceRow(device: device)
+                                    .tag(device.id)
+                            }
+                        } label: {
+                            HStack {
+                                Label("Other network devices", systemImage: "eye.slash").lineLimit(1)
+                                Spacer()
+                                Text("\(otherDevices.count)")
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
                 }
             }
-        }
-        .listStyle(.sidebar)
-        .disabled(manager.isUploading)
-        .safeAreaInset(edge: .bottom) {
+            .listStyle(.sidebar)
+            .disabled(manager.isUploading)
+            .frame(minHeight: 0, maxHeight: .infinity)
+            Divider()
             HStack(spacing: 10) {
                 if manager.isRefreshing || manager.isWorking {
                     ProgressView().controlSize(.small).frame(width: 10, height: 10)
@@ -866,6 +872,7 @@ struct ContentView: View {
             }
             .padding(12)
             .background(.thinMaterial)
+            .fixedSize(horizontal: false, vertical: true)
         }
         .navigationTitle("ADB Deck")
         .toolbar {
@@ -1069,6 +1076,7 @@ struct ContentView: View {
                            remove: { appToRemove = app })
                 }
                 .listStyle(.inset)
+                .frame(minHeight: 0, maxHeight: .infinity)
                 .animation(.smooth, value: filteredApps)
                 .disabled(manager.isWorking)
             }

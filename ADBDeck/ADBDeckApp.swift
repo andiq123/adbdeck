@@ -5,11 +5,15 @@ struct ADBDeckApp: App {
     @StateObject private var updater = AppUpdater()
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                .environmentObject(updater)
-                .frame(minWidth: 940, minHeight: 620)
+            GeometryReader { viewport in
+                ContentView(viewportHeight: viewport.size.height)
+                    .environmentObject(updater)
+                    .frame(width: viewport.size.width, height: viewport.size.height, alignment: .topLeading)
+            }
+            .frame(minWidth: 940, minHeight: 620)
         }
-        .windowStyle(.hiddenTitleBar)
+        .windowStyle(.titleBar)
+        .windowToolbarStyle(.unified)
         .defaultSize(width: 1180, height: 760)
         .commands {
             CommandGroup(after: .appInfo) {
@@ -22,4 +26,3 @@ struct ADBDeckApp: App {
         }
     }
 }
-

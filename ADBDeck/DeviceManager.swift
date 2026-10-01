@@ -3357,7 +3357,10 @@ final class DeviceManager {
               let identity = UserDefaults.standard.dictionary(forKey: "ADBDeck.device.\(mac.lowercased())") as? [String: String] else { return }
         if let manufacturer = identity["manufacturer"] { device.manufacturer = manufacturer }
         if let model = identity["model"] { device.model = model }
-        if device.name.hasPrefix("Device "), let name = identity["name"] { device.name = name }
+        if device.name.hasPrefix("Device ") || device.name == device.serial || device.name == device.id {
+            device.name = identity["name"] ?? device.model
+            if device.name == device.serial || device.name == device.id { device.name = device.model }
+        }
         device.androidCharacteristics = identity["characteristics"] ?? device.androidCharacteristics
     }
 
